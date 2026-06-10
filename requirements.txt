@@ -1,0 +1,22 @@
+# Core ML stack (stable FPGA-friendly versions)
+tensorflow==2.15.1
+keras==2.15.0
+numpy==1.26.4
+scipy==1.11.4
+pandas==2.1.4
+
+# QKeras (important for quantization-aware models)
+qkeras==0.9.0
+
+# hls4ml
+hls4ml>=1.0.0
+
+# Utility / training ecosystem
+matplotlib
+scikit-learn
+h5py
+joblib
+
+# Optional but often used in HEP workflows
+tqdm
+seaborn
