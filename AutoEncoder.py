@@ -16,25 +16,25 @@ def build_qkeras_deepset_film(
 
     # ---- φ: per-track encoder ----
     x = tracks_in
-    x = QDense(16, kernel_quantizer=quantized_bits(8,0,1), bias_quantizer=quantized_bits(8,0,1))(x)
-    x = QActivation(quantized_relu(8,0))(x)
-    x = QDense(16, kernel_quantizer=quantized_bits(8,0,1), bias_quantizer=quantized_bits(8,0,1))(x)
-    x = QActivation(quantized_relu(8,0))(x)
+    x = QDense(16, kernel_quantizer=quantized_bits(16,6,1), bias_quantizer=quantized_bits(16,6,1))(x)
+    x = QActivation(quantized_relu(16,6))(x)
+    x = QDense(16, kernel_quantizer=quantized_bits(16,6,1), bias_quantizer=quantized_bits(16,6,1))(x)
+    x = QActivation(quantized_relu(16,6))(x)
 
     phi_dim = 16
 
     # ---- ψ: event → FiLM ----
-    e = QDense(16, kernel_quantizer=quantized_bits(8,0,1), bias_quantizer=quantized_bits(8,0,1))(event_in)
-    e = QActivation(quantized_relu(8,0))(e)
+    e = QDense(16, kernel_quantizer=quantized_bits(16,6,1), bias_quantizer=quantized_bits(16,6,1))(event_in)
+    e = QActivation(quantized_relu(16,6))(e)
 
     gamma = QDense(phi_dim,
-                   kernel_quantizer=quantized_bits(8,0,1),
-                   bias_quantizer=quantized_bits(8,0,1),
+                   kernel_quantizer=quantized_bits(16,6,1),
+                   bias_quantizer=quantized_bits(16,6,1),
                    name="gamma")(e)
 
     beta = QDense(phi_dim,
-                  kernel_quantizer=quantized_bits(8,0,1),
-                  bias_quantizer=quantized_bits(8,0,1),
+                  kernel_quantizer=quantized_bits(16,6,1),
+                  bias_quantizer=quantized_bits(16,6,1),
                   name="beta")(e)
 
     gamma = layers.Reshape((1, phi_dim))(gamma)
@@ -56,27 +56,31 @@ def build_qkeras_deepset_film(
     x = layers.Dense(
         1,
         use_bias=False,
-        kernel_initializer=tf.keras.initializers.Ones(),
+        # kernel_initializer=tf.keras.initializers.Ones(),
+        kernel_initializer=tf.keras.initializers.Constant(
+            1.0/n_tracks_max
+        ),
+        trainable=False,
         name="sum_over_tracks"
     )(x)
 
-    # Now shape is (batch, features, 1)
+    # # Now shape is (batch, features, 1)
     x = layers.Reshape((-1,), name="flatten_features")(x)
 
-    # ---- ρ: event-level ----
-    x = QDense(16, kernel_quantizer=quantized_bits(8,0,1),
-                     bias_quantizer=quantized_bits(8,0,1))(x)
-    x = QActivation(quantized_relu(8,0))(x)
+    # # ---- ρ: event-level ----
+    x = QDense(16, kernel_quantizer=quantized_bits(16,6,1),
+                     bias_quantizer=quantized_bits(16,6,1))(x)
+    x = QActivation(quantized_relu(16,6))(x)
 
     # ---- Gaussian latent ----
     mu = QDense(latent_dim,
-                kernel_quantizer=quantized_bits(8,0,1),
-                bias_quantizer=quantized_bits(8,0,1),
+                kernel_quantizer=quantized_bits(16,6,1),
+                bias_quantizer=quantized_bits(16,6,1),
                 name="mu")(x)
 
     logvar = QDense(latent_dim,
-                    kernel_quantizer=quantized_bits(8,0,1),
-                    bias_quantizer=quantized_bits(8,0,1),
+                    kernel_quantizer=quantized_bits(16,6,1),
+                    bias_quantizer=quantized_bits(16,6,1),
                     name="logvar")(x)
 
     # # ---- Gaussian NLL (approx anomaly score) ----
@@ -87,3 +91,125 @@ def build_qkeras_deepset_film(
     # score = layers.Lambda(gaussian_nll, name="score")([mu, logvar])
 
     return Model(inputs=[tracks_in, mask_in, event_in], outputs=[mu,logvar])
+
+
+# Non-quantised version
+def build_deepset_film(
+    n_tracks_max,
+    n_track_features,
+    n_event_features,
+    latent_dim=8
+):
+
+    # Inputs
+    tracks_in = layers.Input(
+        shape=(n_tracks_max, n_track_features),
+        name="tracks"
+    )
+
+    mask_in = layers.Input(
+        shape=(n_tracks_max, 1),
+        name="mask"
+    )
+
+    event_in = layers.Input(
+        shape=(n_event_features,),
+        name="event"
+    )
+
+    # ==========================================================
+    # φ : per-track encoder
+    # ==========================================================
+
+    x = tracks_in
+
+    x = layers.Dense(16)(x)
+    x = layers.ReLU()(x)
+
+    x = layers.Dense(16)(x)
+    x = layers.ReLU()(x)
+
+    phi_dim = 16
+
+    # ==========================================================
+    # ψ : event -> FiLM parameters
+    # ==========================================================
+
+    e = layers.Dense(16)(event_in)
+    e = layers.ReLU()(e)
+
+    gamma = layers.Dense(
+        phi_dim,
+        name="gamma"
+    )(e)
+
+    beta = layers.Dense(
+        phi_dim,
+        name="beta"
+    )(e)
+
+    gamma = layers.Reshape((1, phi_dim))(gamma)
+    beta = layers.Reshape((1, phi_dim))(beta)
+
+    # ==========================================================
+    # FiLM modulation
+    # ==========================================================
+
+    x = layers.Multiply()([x, gamma])
+    x = layers.Add()([x, beta])
+
+    # ==========================================================
+    # Track mask
+    # ==========================================================
+
+    x = layers.Multiply()([x, mask_in])
+
+    # ==========================================================
+    # Deep Sets pooling
+    # ==========================================================
+
+    x = layers.Permute(
+        (2, 1),
+        name="permute_tracks_features"
+    )(x)
+
+    x = layers.Dense(
+        1,
+        use_bias=False,
+        kernel_initializer=tf.keras.initializers.Constant(
+            1.0 / n_tracks_max
+        ),
+        trainable=False,
+        name="sum_over_tracks"
+    )(x)
+
+    x = layers.Reshape(
+        (-1,),
+        name="flatten_features"
+    )(x)
+
+    # ==========================================================
+    # ρ : event-level network
+    # ==========================================================
+
+    x = layers.Dense(16)(x)
+    x = layers.ReLU()(x)
+
+    # ==========================================================
+    # Gaussian latent parameters
+    # ==========================================================
+
+    mu = layers.Dense(
+        latent_dim,
+        name="mu"
+    )(x)
+
+    logvar = layers.Dense(
+        latent_dim,
+        name="logvar"
+    )(x)
+
+    return Model(
+        inputs=[tracks_in, mask_in, event_in],
+        outputs=[mu, logvar]
+    )
