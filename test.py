@@ -1,7 +1,11 @@
 import tensorflow as tf
 from tensorflow.keras import Model, layers
+from tensorflow.keras.utils import plot_model
+from hls4ml.model.profiling import numerical
 import hls4ml
 import numpy as np
+
+import matplotlib.pyplot as plt
 
 from AutoEncoder import build_qkeras_deepset_film, build_deepset_film
 
@@ -15,6 +19,13 @@ model = build_deepset_film(
 )
 
 print(model.summary())
+plot_model(
+    model,
+    to_file = "keras_model.pdf",
+    show_shapes = True,
+    show_dtype = True,
+    expand_nested = True
+)
 
 # Forward pass test
 B = 4
@@ -50,6 +61,10 @@ hls_model = hls4ml.converters.convert_from_keras_model(
 # Compile model 
 hls_model.compile()
 # print(config['LayerName'])
+hls4ml.utils.plot_model(hls_model, show_shapes = True)
+plots = numerical(model = model, hls_model = hls_model)
+print(plots)
+plt.show()
 
 # run C simulation
 y_hls = hls_model.predict([tracks, mask, event]) #.reshape(-1, 64, 16)
