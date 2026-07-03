@@ -213,3 +213,28 @@ def build_deepset_film(
         inputs=[tracks_in, mask_in, event_in],
         outputs=[mu, logvar]
     )
+
+
+def buid_decoder(
+    latent_dim=8,
+    hidden_layers = [16,8,4,2],
+):
+
+    decoder_in = layers.Input(
+        shape=(latent_dim,),
+        name="input"
+    )
+
+    x = decoder_in
+
+    for layer_size in hidden_layers:
+        x = layers.Dense(layer_size)(x)
+        x = layers.ReLU()(x)
+
+    return Model(
+        inputs = decoder_in,
+        outputs = x,
+    )
+
+
+    
