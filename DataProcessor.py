@@ -101,6 +101,25 @@ class DataProcessor:
     
     def load_arrays(self, filepath):
         ...
+
+    # Transform the data to be in range [-1,1]
+    def get_lin_transform(self):
+        if self.trk_array is None or self.event_array is None:
+            raise ValueError("Arrays not computed yet. Call get_npy_arrays() first.")
+        
+        trk_min = np.min(self.trk_array, axis=(0,1))
+        trk_max = np.max(self.trk_array, axis=(0,1))
+
+        event_min = np.min(self.event_array, axis=0)
+        event_max = np.max(self.event_array, axis=0)
+
+        trk_shift = (trk_max + trk_min) / 2
+        trk_scale = (trk_max - trk_min) / 2
+        event_shift = (event_max + event_min) / 2
+        event_scale = (event_max - event_min) / 2
+        
+        return trk_shift, trk_scale, event_shift, event_scale
+
         
 if __name__ == "__main__":
 
@@ -129,7 +148,8 @@ if __name__ == "__main__":
         trk_columns,
         event_columns,
         variables_to_define,
-        max_events = 50000,
+        max_events = 5000,
         )
     
     data = DP.get_split_dataset(0.2, )
+    DP.get_lin_transform()

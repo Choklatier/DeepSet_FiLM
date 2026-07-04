@@ -92,13 +92,30 @@ def build_qkeras_deepset_film(
 
     return Model(inputs=[tracks_in, mask_in, event_in], outputs=[mu,logvar])
 
+# Linear normalisation layer
+class LinearNormalisation(layers.Layer):
+
+    def __init__(self, scale, shift, **kwargs):
+        super().__init__(trainable=False, **kwargs)
+
+        self.scale = tf.constant(scale, dtype=tf.float32)
+        self.shift = tf.constant(shift, dtype=tf.float32)
+    
+    def call(self, inputs):
+        out = (inputs - self.shift) / self.scale
+        return out
+
 
 # Non-quantised version
 def build_deepset_film(
     n_tracks_max,
     n_track_features,
     n_event_features,
-    latent_dim=8
+    latent_dim=8,
+    trk_shift=None,
+    trk_scale=None,
+    event_shift=None,
+    event_scale=None,
 ):
 
     # Inputs
@@ -117,11 +134,30 @@ def build_deepset_film(
         name="event"
     )
 
+    x = tracks_in
+    e = event_in
+
+    # ==========================================================
+    # Normalisation layers (if given)
+    # ==========================================================
+
+    if trk_shift is not None and trk_scale is not None:
+        x = LinearNormalisation(
+            scale=trk_scale, 
+            shift=trk_shift,
+            name = "track_norm",
+            )(tracks_in)
+
+    if event_shift is not None and event_scale is not None:
+        e = LinearNormalisation(
+            scale=event_scale, 
+            shift=event_shift,
+            name = "event_norm"
+            )(event_in)
+    
     # ==========================================================
     # φ : per-track encoder
     # ==========================================================
-
-    x = tracks_in
 
     x = layers.Dense(16)(x)
     x = layers.ReLU()(x)
@@ -135,7 +171,7 @@ def build_deepset_film(
     # ψ : event -> FiLM parameters
     # ==========================================================
 
-    e = layers.Dense(16)(event_in)
+    e = layers.Dense(16)(e)
     e = layers.ReLU()(e)
 
     gamma = layers.Dense(
@@ -168,16 +204,18 @@ def build_deepset_film(
     # Deep Sets pooling
     # ==========================================================
 
+    # Permute to (batch, features, tracks), to sum over tracks!
     x = layers.Permute(
         (2, 1),
         name="permute_tracks_features"
     )(x)
 
+    # Dense layer with constant weights to sum over tracks
     x = layers.Dense(
         1,
         use_bias=False,
         kernel_initializer=tf.keras.initializers.Constant(
-            1.0 / n_tracks_max
+            1.0 #/ n_tracks_max # TODO: Normalise with valid number of tracks instead?
         ),
         trainable=False,
         name="sum_over_tracks"
@@ -215,9 +253,10 @@ def build_deepset_film(
     )
 
 
-def buid_decoder(
+def build_decoder(
     latent_dim=8,
-    hidden_layers = [16,8,4,2],
+    hidden_layers=[16, 16, 8],
+    output_dim=3,
 ):
 
     decoder_in = layers.Input(
@@ -231,9 +270,11 @@ def buid_decoder(
         x = layers.Dense(layer_size)(x)
         x = layers.ReLU()(x)
 
+    x = layers.Dense(output_dim, name="decoder_output")(x)
+
     return Model(
-        inputs = decoder_in,
-        outputs = x,
+        inputs=decoder_in,
+        outputs=x,
     )
 
 
