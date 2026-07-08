@@ -1,6 +1,7 @@
 import tensorflow as tf
 from tensorflow.keras import Model, layers
 from qkeras import QDense, QActivation, quantized_bits, quantized_relu
+import numpy as np
 
 def build_qkeras_deepset_film(
     n_tracks_max,
@@ -142,19 +143,55 @@ def build_deepset_film(
     # ==========================================================
 
     if trk_shift is not None and trk_scale is not None:
-        x = LinearNormalisation(
-            scale=trk_scale, 
-            shift=trk_shift,
-            name = "track_norm",
-            )(tracks_in)
+        # x = LinearNormalisation(
+        #     scale=trk_scale, 
+        #     shift=trk_shift,
+        #     name = "track_norm",
+        #     )(tracks_in)
+        
+        track_kernel = np.diag(1.0 / trk_scale).astype(np.float32)
+        track_bias   = (-trk_shift / trk_scale).astype(np.float32)
+
+        x = layers.Dense(
+            n_track_features,
+            use_bias=True,
+            trainable=False,
+            kernel_initializer=tf.keras.initializers.Constant(track_kernel),
+            bias_initializer=tf.keras.initializers.Constant(track_bias),
+            name="track_norm",
+        )(x)
+        
+        # x = layers.Rescaling(
+        #     scale=1.0 / trk_scale,
+        #     offset=-trk_shift / trk_scale,
+        #     name="track_norm"
+        # )(x)
 
     if event_shift is not None and event_scale is not None:
-        e = LinearNormalisation(
-            scale=event_scale, 
-            shift=event_shift,
-            name = "event_norm"
-            )(event_in)
-    
+        # e = LinearNormalisation(
+        #     scale=event_scale, 
+        #     shift=event_shift,
+        #     name = "event_norm"
+        #     )(event_in)
+        
+        event_kernel = np.diag(1.0 / event_scale).astype(np.float32)
+        event_bias   = (-event_shift / event_scale).astype(np.float32)
+
+        e = layers.Dense(
+            n_event_features,
+            use_bias=True,
+            trainable=False,
+            kernel_initializer=tf.keras.initializers.Constant(event_kernel),
+            bias_initializer=tf.keras.initializers.Constant(event_bias),
+            name="event_norm",
+        )(e)
+
+        # e = layers.Rescaling(
+        #     scale=1.0 / event_scale,
+        #     offset=-event_shift / event_scale,
+        #     name="event_norm"
+        # )(e)
+
     # ==========================================================
     # φ : per-track encoder
     # ==========================================================
@@ -190,7 +227,7 @@ def build_deepset_film(
     # ==========================================================
     # FiLM modulation
     # ==========================================================
-
+    
     x = layers.Multiply()([x, gamma])
     x = layers.Add()([x, beta])
 

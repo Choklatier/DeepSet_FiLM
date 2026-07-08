@@ -60,7 +60,8 @@ folds = DP.get_kfold_dataset(kfolds = 5, cut = "1")
 
 print("Computing linear transformation parameters...")
 trk_shift, trk_scale, event_shift, event_scale = DP.get_lin_transform()
-
+print(trk_shift, trk_scale, event_shift, event_scale)
+print("Transf:", 1/trk_scale, -trk_shift/trk_scale, 1/event_scale, -event_shift/event_scale)
 # TODO : train multiple models using all folds
 train_trk_array = folds[0][0]
 train_event_array = folds[0][1]
@@ -140,4 +141,40 @@ for epoch in range(3):
         if step % 10 == 0:
             print(f"epoch={epoch} step={step} loss={loss_value.numpy():.4f} recon={recon_loss.numpy():.4f} kl={kl_loss.numpy():.4f}")
 
+# print("\nWeight and bias summary for model layers:")
+# for layer in model.layers:
+#     if hasattr(layer, "weights") and len(layer.weights) > 0:
+#         layer_name = layer.name
+#         for weight in layer.weights:
+#             values = weight.numpy()
+#             if values.ndim == 0:
+#                 continue
+#             if "bias" in weight.name.lower():
+#                 print(f"{layer_name} bias min={values.min():.6f} max={values.max():.6f}")
+#             else:
+#                 print(f"{layer_name} weight min={values.min():.6f} max={values.max():.6f}")
+
+
+# Convert model to hls4ml
+# Set options
+config = hls4ml.utils.config_from_keras_model(
+    model,
+    granularity='name'
+)
+# Optional: enforce precision
+# config['Model']['Precision'] = 'ap_fixed<16,6>'
+config['Model']['ReuseFactor'] = 4
+for layer in config['LayerName']:
+    config['LayerName'][layer]['Trace'] = True # Debugging
+
+# Convert model
+hls_model = hls4ml.converters.convert_from_keras_model(
+    model,
+    hls_config=config,
+    output_dir='deepset_film_hls4ml',
+    part='xcu250-figd2104-2L-e'  # change to your FPGA
+)
+
+# Compile model 
+hls_model.compile()
 
