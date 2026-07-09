@@ -9,6 +9,7 @@ class DataProcessor:
         tree : ROOT.TTree, 
         trk_columns : list,
         event_columns : list,
+        jets_columns : list = None,
         variables_to_define : dict = None,
         max_tracks : int = 50,
         max_events : int = None,
@@ -16,6 +17,7 @@ class DataProcessor:
 
         self.trk_columns = trk_columns
         self.event_columns = event_columns
+        self.jets_columns = jets_columns
         self.max_tracks = max_tracks
 
         self.tree = tree
@@ -35,6 +37,7 @@ class DataProcessor:
         # Store last computed arrays
         self.trk_array = None
         self.event_array = None
+        self.jets_array = None
 
     # Function that reads the array for one track variable
     def tracks_to_array(self, array):
@@ -51,11 +54,21 @@ class DataProcessor:
                     )
             output = np.vstack([output, tracks]) if output is not None else tracks
         return output.T
+    
+    # Function that reads the array for one jet variable
+    def jets_to_array(self, array):
+        output = None
+        for event in tqdm(array):
+            jets = event[:2] # Kepp only the two first jets for now TODO: add paramters to handle it
+            output = np.vstack([output, jets]) if output is not None else jets
+        return output.T
+
 
     def get_npy_arrays(self, cut = "1"):
         rdf_filtered = self.rdf.Filter(cut)
         trk_arrays = rdf_filtered.AsNumpy(self.trk_columns)
         event_arrays = rdf_filtered.AsNumpy(self.event_columns)
+        jets_arrays = rdf_filtered.AsNumpy(self.jets_columns) if self.jets_columns is not None else None
 
         # Convert dict of arrays to stricly arrays
         print(f"Preparing {len(self.trk_columns)} track features:")
@@ -63,15 +76,25 @@ class DataProcessor:
         trk_array_output = np.stack(tracks_var_arrays)
 
         # Event array are straight forwardly all the same shape
+        print(f"Preparing the event features:")
         event_array_output = event_arrays[self.event_columns[0]]
         for column in self.event_columns[1:]:
             event_array_output = np.vstack([event_array_output,event_arrays[column]])
 
+        # Jets array
+        if self.jets_columns is not None:
+            print(f"Preparing {len(self.jets_columns)} jet features:")
+            jets_var_arrays = [self.jets_to_array(jets_arrays[column]) for column in self.jets_columns]
+            jets_array_output = np.stack(jets_var_arrays).T
+        else:
+            jets_array_output = None
+        
         # Store arrays as fields
         self.trk_array = trk_array_output.T
         self.event_array = event_array_output.T
+        self.jets_array = jets_array_output
 
-        return trk_array_output.T, event_array_output.T
+        return trk_array_output.T, event_array_output.T, jets_array_output
 
     def get_split_dataset(self, val_fraction, cut = "1") -> np.array:
         trk_array, event_array = self.get_npy_arrays(cut)
