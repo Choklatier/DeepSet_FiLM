@@ -6,11 +6,18 @@ LIGHT_SPEED = 299792458*1e3 # mm/s
 # Assume jets_array := [pt,eta,phi,e]
 class LLPMaker:
 
-    def __init__(self, trk_array : np.array, jets_array : np.array):
+    def __init__(
+            self, 
+            trk_array : np.array, 
+            jets_array : np.array,
+            trk_columns : list,
+            ):
         self.trk_array = trk_array
         self.jets_array = jets_array
+        self.trk_columns = trk_columns
 
-    def sample_LLP_tracks(
+
+    def sample_LLP_tracks_loop(
             self, 
             mass : float, 
             lifetime : float, 
@@ -98,6 +105,177 @@ class LLPMaker:
                 return p_fermion1, p_fermion2, d, n_j, p
             
             # TODO :Fill the tracks array with the new tracks
+    
+    def sample_LLP_tracks(
+        self, 
+        mass : float, 
+        lifetime : float, 
+        alpha : float, # Shape parameter for the beta dist (used to sample the momentum of the resonance)
+        beta : float, # Shape parameter for the beta dist (used to sample the momentum of the resonance)
+        sig_0 : float, # for input to Rayleigh distribution for the transverse momentum
+        a : float, # for input to Rayleigh distribution for the transverse momentum
+        opposite_charge_fermions : bool = True,
+        different_fermion_flavors : bool = False,
+        debug_return : bool = False
+        ):
+        """
+        Sample a resonance with a given mass and lifetime, and produce two tracks associated with it.
+        """
+
+        # Get number of events and first jets
+        N_events = len(self.trk_array)
+        jets = self.jets_array[:, 0] # highest pT jet
+        
+        # Get jet kinematics
+        pt_jet  = jets[:, 0]
+        eta_jet = jets[:, 1]
+        phi_jet = jets[:, 2]
+        theta = 2*np.arctan(np.exp(-eta_jet))
+        sin_theta = np.sin(theta)
+        cos_theta = np.cos(theta)
+        sin_phi = np.sin(phi_jet)
+        cos_phi = np.cos(phi_jet)
+        # Compute jet direction vector
+        n_j = np.stack([
+            sin_theta*cos_phi,
+            sin_theta*sin_phi,
+            cos_theta
+        ], axis=1)
+        # Compute perpendicular vectors
+        e_theta = np.stack([
+            cos_theta*cos_phi,
+            cos_theta*sin_phi,
+            -sin_theta
+        ], axis=1)
+        e_phi = np.stack([
+            -sin_phi,
+            cos_phi,
+            np.zeros(N_events)
+        ], axis=1)
+
+        # Sample LLP kinematics
+        z = np.random.beta(alpha, beta, N_events)
+        sigma = sig_0 * (1 - z)**a
+        opening = np.random.rayleigh(sigma)
+        dphi = np.random.uniform(0, 2*np.pi, N_events)
+
+        # Compute direction of the resonance
+        n_res = (
+            np.cos(opening)[:,None]*n_j
+            + np.sin(opening)[:,None] *
+            (
+                np.cos(dphi)[:,None]*e_theta
+                + np.sin(dphi)[:,None]*e_phi
+            )
+        )
+
+        # Get angles of resonance
+        theta_res = np.arccos(n_res[:,2])
+        eta_res = -np.log(np.tan(theta_res/2))
+        phi_res = np.arctan2(
+            n_res[:,1],
+            n_res[:,0]
+        )
+
+        # Compute the resonance energy/momentum based on z
+        pt_res = z * pt_jet
+        px = pt_res*np.cos(phi_res)
+        py = pt_res*np.sin(phi_res)
+        pz = pt_res*np.sinh(eta_res)
+
+        p = np.stack([px,py,pz], axis=1)
+        pmag = np.linalg.norm(p, axis=1)
+        energy = np.sqrt(pmag**2 + mass**2)
+
+        # Use lifetime to get track origins
+        proper_time = np.random.exponential(
+            lifetime,
+            N_events
+        )
+        distance = (
+            pmag/mass
+        )*LIGHT_SPEED*proper_time
+
+        vertex = distance[:,None] * p / pmag[:,None]
+
+        # Sample two-body decay
+        costheta = np.random.uniform(-1,1,N_events)
+        sintheta = np.sqrt(1-costheta**2)
+        phi_decay = np.random.uniform(0,2*np.pi,N_events)
+
+        if different_fermion_flavors:
+            raise ValueError("Different fermion flavors not implemented yet")
+        else:
+            # Get fermion mass (e or mu)
+            mass_fermion = np.where(
+                np.random.rand(N_events) < 0.5,
+                0.000511,   # GeV
+                0.105658    # GeV
+            )
+            
+            # Momentum magnitude of fermion in rest frame
+            pstar = np.sqrt(
+                mass**2/4
+                - mass_fermion**2
+            ) 
+            
+            # Convert to 3D assuming isotropic decay
+            prest = pstar[:, None]*np.stack([
+                sintheta*np.cos(phi_decay),
+                sintheta*np.sin(phi_decay),
+                costheta
+            ], axis=1)
+
+            # Now we need to boost back in Lab frame
+            beta_res = p/energy[:,None]
+            beta_res2 = np.sum(beta_res**2, axis=1)
+            gamma = 1/np.sqrt(1-beta_res2)
+            Erest = np.sqrt(
+                pstar**2
+                + mass_fermion**2
+            )
+            dot = np.sum(
+                beta_res*prest,
+                axis=1
+            )
+
+            boost = (
+            ((gamma-1)/beta_res2)[:,None]
+            *dot[:,None]
+            *beta_res
+            +
+            (gamma*Erest)[:,None]
+            *beta_res
+            )
+
+            p1 = prest + boost
+            p2 = -prest + (
+                ((gamma-1)/beta_res2)[:,None]
+                *(-dot)[:,None]
+                *beta_res
+                +
+                (gamma*Erest)[:,None]
+                *beta_res
+            )
+
+            charge_fermion1 = np.where(
+                np.random.rand(N_events) < 0.5,
+                -1,
+                1    
+            )
+            charge_fermion2 = -charge_fermion1 if opposite_charge_fermions else np.where(
+                np.random.rand(N_events) < 0.5,
+                -1,
+                1    
+            )
+
+            if debug_return:
+                return p1, p2, vertex, n_j, p
+
+
+
+    def save_arrays(self, filepath : str):
+        ...
 
 if __name__ == "__main__":
     import ROOT
@@ -131,13 +309,13 @@ if __name__ == "__main__":
         event_columns,
         jets_columns = ["jet_pt", "jet_eta", "jet_phi", "jet_mass"],
         variables_to_define = variables_to_define,
-        max_events = 2,
+        max_events = 17,
         )
     
     trk_array, event_array, jets_array = DP.get_npy_arrays()
 
     mass = 100.0 # GeV
-    llp_maker = LLPMaker(trk_array, jets_array)
+    llp_maker = LLPMaker(trk_array, jets_array, trk_columns)
     p_fermion1, p_fermion2, d, n_j, p = llp_maker.sample_LLP_tracks(
         mass=mass,
         lifetime=1e-11,
@@ -149,6 +327,16 @@ if __name__ == "__main__":
         different_fermion_flavors=False,
         debug_return = True
     )
+    event_nb = 0
+    p_fermion1, p_fermion2, d, n_j, p = (
+        p_fermion1[event_nb,:], 
+        p_fermion2[event_nb,:], 
+        d[event_nb,:], n_j[event_nb,:], p[event_nb,:]
+    )
+    print(
+        p_fermion1.shape, p_fermion2.shape,
+        d.shape, n_j.shape, p.shape
+        )
 
     fig = plt.figure(figsize=(8, 6))
     ax = fig.add_subplot(111, projection="3d")

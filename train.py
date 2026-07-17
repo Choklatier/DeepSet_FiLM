@@ -15,15 +15,18 @@ variables_to_define = {
 
 trk_columns = [
     "trk_d0",
-    "trk_pt",
+    "trk_z0",
+    "trk_px",
+    "trk_py",
     "trk_eta",
-    "trk_phi",
+    "trk_charge"
 ]
 
 event_columns = [
     "met_px",
     "met_py",
     "nTrack",
+    "nJet",
 ]
 
 # Force eager execution for debugging
@@ -155,26 +158,26 @@ for epoch in range(3):
 #                 print(f"{layer_name} weight min={values.min():.6f} max={values.max():.6f}")
 
 
-# Convert model to hls4ml
-# Set options
-config = hls4ml.utils.config_from_keras_model(
-    model,
-    granularity='name'
-)
-# Optional: enforce precision
-# config['Model']['Precision'] = 'ap_fixed<16,6>'
-config['Model']['ReuseFactor'] = 4
-for layer in config['LayerName']:
-    config['LayerName'][layer]['Trace'] = True # Debugging
+# # Convert model to hls4ml
+# # Set options
+# config = hls4ml.utils.config_from_keras_model(
+#     model,
+#     granularity='name'
+# )
+# # Optional: enforce precision
+# # config['Model']['Precision'] = 'ap_fixed<16,6>'
+# config['Model']['ReuseFactor'] = 4
+# for layer in config['LayerName']:
+#     config['LayerName'][layer]['Trace'] = True # Debugging
 
-# Convert model
-hls_model = hls4ml.converters.convert_from_keras_model(
-    model,
-    hls_config=config,
-    output_dir='deepset_film_hls4ml',
-    part='xcu250-figd2104-2L-e'  # change to your FPGA
-)
+# # Convert model
+# hls_model = hls4ml.converters.convert_from_keras_model(
+#     model,
+#     hls_config=config,
+#     output_dir='deepset_film_hls4ml',
+#     part='xcu250-figd2104-2L-e'  # change to your FPGA
+# )
 
-# Compile model 
-hls_model.compile()
+# # Compile model 
+# hls_model.compile()
 
