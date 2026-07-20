@@ -1,0 +1,10 @@
+.DS_Store
+.vscode/
+*.root
+__pycache__/
+*.pdf
+*.png
+*.txt
+plots/
+deepset_film_hls4ml/
+setup.sh
