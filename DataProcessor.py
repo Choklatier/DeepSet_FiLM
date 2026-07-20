@@ -11,7 +11,7 @@ class DataProcessor:
         event_columns : list,
         jets_columns : list = None,
         variables_to_define : dict = None,
-        max_tracks : int = 50,
+        max_tracks : int = 64,
         max_events : int = None,
         ) -> None:
 
@@ -56,10 +56,17 @@ class DataProcessor:
         return output.T
     
     # Function that reads the array for one jet variable
-    def jets_to_array(self, array):
+    def jets_to_array(self, array, max_jets = 6):
         output = None
         for event in tqdm(array):
-            jets = event[:2] # Kepp only the two first jets for now TODO: add paramters to handle it
+            jets = event[:max_jets] 
+            # pad with zeros if we have less jets
+            if len(jets) < max_jets:
+                jets = np.pad(
+                    jets, 
+                    (0, max_jets - len(jets)), 
+                    constant_values=0 
+                    )
             output = np.vstack([output, jets]) if output is not None else jets
         return output.T
 
