@@ -1,0 +1,32 @@
+# Manages the input data to the NN
+Inputs:
+  
+  # Variables to define from available information
+  variables_to_define: 
+    "met_px" : "met_pt * cos(met_phi)"
+    "met_py" : "met_pt * sin(met_phi)"
+  
+  # columns used for tracks features
+  trk_columns:
+    - "trk_d0"
+    - "trk_z0"
+    - "trk_px"
+    - "trk_py"
+    - "trk_eta"
+    - "trk_charge"
+  
+  # columns used for event-level features
+  event_columns:
+    - "met_px"
+    - "met_py"
+    - "nTrack"
+    - "nJet"
+
+# Training settings  
+Training:
+  MAX_TRACKS: 16
+  MAX_EVENTS: 5000
+  BATCH_SIZE: 128
+  N_EPOCHS: 50
+
+  

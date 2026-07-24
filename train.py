@@ -8,27 +8,20 @@ from DataProcessor import DataProcessor
 from LLPMaker import LLPMaker
 from AutoEncoder import build_qkeras_deepset_film, build_deepset_film, build_decoder
 
-# Select data
-variables_to_define = {
-        "met_px" : "met_pt * cos(met_phi)",
-        "met_py" : "met_pt * sin(met_phi)",
-    }
+import yaml
 
-trk_columns = [
-    "trk_d0",
-    "trk_z0",
-    "trk_px",
-    "trk_py",
-    "trk_eta",
-    "trk_charge"
-]
+with open("config.yaml","r") as config_file:
+    config = yaml.safe_load(config_file)
 
-event_columns = [
-    "met_px",
-    "met_py",
-    "nTrack",
-    "nJet",
-]
+# Read input information from yaml config
+variables_to_define = config["Inputs"]["variables_to_define"]
+trk_columns = config["Inputs"]["trk_columns"]
+event_columns = config["Inputs"]["event_columns"]
+
+MAX_TRACKS = config["Training"]["MAX_TRACKS"]
+MAX_EVENTS = config["Training"]["MAX_EVENTS"]
+BATCH_SIZE = config["Training"]["BATCH_SIZE"]
+N_EPOCHS   = config["Training"]["N_EPOCHS"]
 
 # Force eager execution for debugging
 # This makes tensors concrete and allows .numpy() and simple prints inside the model.
@@ -41,11 +34,6 @@ event_columns = [
 #     tf.compat.v1.enable_eager_execution()
 # except Exception:
 #     pass
-
-MAX_TRACKS = 16
-MAX_EVENTS = 5000
-BATCH_SIZE = 128
-N_EPOCHS = 50
 
 # Read data
 print("Reading data...")
