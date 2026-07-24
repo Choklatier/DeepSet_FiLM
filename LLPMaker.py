@@ -272,6 +272,71 @@ class LLPMaker:
             if debug_return:
                 return p1, p2, vertex, n_j, p
 
+        # Clone the track array and inject the new LLP decay tracks into the event-wise
+        # track layout without any Python event loop. The combined track tensor is then
+        # re-sorted by descending transverse momentum so the track ordering matches the
+        # convention used by DataProcessor.
+        trk_array = np.array(self.trk_array, copy=True)
+        n_events, n_tracks, n_features = trk_array.shape
+        # TODO: switch messy .index repetition with dictionary + for loop over features
+        track_pt_idx = self.trk_columns.index("trk_pt") if "trk_pt" in self.trk_columns else None
+        track_px_idx = self.trk_columns.index("trk_px") if "trk_px" in self.trk_columns else None
+        track_py_idx = self.trk_columns.index("trk_py") if "trk_py" in self.trk_columns else None
+        track_eta_idx = self.trk_columns.index("trk_eta") if "trk_eta" in self.trk_columns else None
+        track_phi_idx = self.trk_columns.index("trk_phi") if "trk_phi" in self.trk_columns else None
+        track_d0_idx = self.trk_columns.index("trk_d0") if "trk_d0" in self.trk_columns else None
+        track_z0_idx = self.trk_columns.index("trk_z0") if "trk_z0" in self.trk_columns else None
+        track_charge_idx = self.trk_columns.index("trk_charge") if "trk_charge" in self.trk_columns else None
+
+        pt1 = np.sqrt(p1[:, 0]**2 + p1[:, 1]**2)
+        pt2 = np.sqrt(p2[:, 0]**2 + p2[:, 1]**2)
+        phi1 = np.arctan2(p1[:, 1], p1[:, 0])
+        phi2 = np.arctan2(p2[:, 1], p2[:, 0])
+        eta1 = np.arcsinh(p1[:, 2] / np.maximum(pt1, 1e-12))
+        eta2 = np.arcsinh(p2[:, 2] / np.maximum(pt2, 1e-12))
+        d0 = np.sqrt(vertex[:, 0]**2 + vertex[:, 1]**2)
+        z0 = vertex[:, 2]
+
+        injected_tracks = np.zeros((N_events, 2, n_features), dtype=trk_array.dtype)
+
+        if track_px_idx is not None:
+            injected_tracks[:, 0, track_px_idx] = p1[:, 0]
+            injected_tracks[:, 1, track_px_idx] = p2[:, 0]
+        if track_py_idx is not None:
+            injected_tracks[:, 0, track_py_idx] = p1[:, 1]
+            injected_tracks[:, 1, track_py_idx] = p2[:, 1]
+        if track_eta_idx is not None:
+            injected_tracks[:, 0, track_eta_idx] = eta1
+            injected_tracks[:, 1, track_eta_idx] = eta2
+        if track_phi_idx is not None:
+            injected_tracks[:, 0, track_phi_idx] = phi1
+            injected_tracks[:, 1, track_phi_idx] = phi2
+        if track_pt_idx is not None:
+            injected_tracks[:, 0, track_pt_idx] = pt1
+            injected_tracks[:, 1, track_pt_idx] = pt2
+        if track_d0_idx is not None:
+            injected_tracks[:, :, track_d0_idx] = d0[:, None]
+        if track_z0_idx is not None:
+            injected_tracks[:, :, track_z0_idx] = z0[:, None]
+        if track_charge_idx is not None:
+            injected_tracks[:, 0, track_charge_idx] = charge_fermion1
+            injected_tracks[:, 1, track_charge_idx] = charge_fermion2
+
+        candidate_tracks = np.concatenate([trk_array, injected_tracks], axis=1)
+
+        if track_pt_idx is not None:
+            track_pt = candidate_tracks[:, :, track_pt_idx]
+        elif track_px_idx is not None and track_py_idx is not None:
+            track_pt = np.sqrt(candidate_tracks[:, :, track_px_idx]**2 + candidate_tracks[:, :, track_py_idx]**2)
+        else:
+            track_pt = None
+
+        if track_pt is not None:
+            ordering = np.argsort(-track_pt, axis=1, kind="mergesort")
+            candidate_tracks = np.take_along_axis(candidate_tracks, ordering[..., None], axis=1)
+
+        return candidate_tracks[:, :n_tracks, :]
+
 
 
     def save_arrays(self, filepath : str):

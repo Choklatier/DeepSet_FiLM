@@ -5,6 +5,8 @@ __pycache__/
 *.pdf
 *.png
 *.txt
+*.onnx
+*.log
 plots/
 deepset_film_hls4ml/
 setup.sh

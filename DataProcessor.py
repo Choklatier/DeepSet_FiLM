@@ -104,7 +104,7 @@ class DataProcessor:
         return trk_array_output.T, event_array_output.T, jets_array_output
 
     def get_split_dataset(self, val_fraction, cut = "1") -> np.array:
-        trk_array, event_array = self.get_npy_arrays(cut)
+        trk_array, event_array, jets_array = self.get_npy_arrays(cut)
         nb_events = trk_array.shape[0]
         val_nb_events = int(np.round(val_fraction * nb_events, decimals = 0))
 
@@ -117,14 +117,19 @@ class DataProcessor:
         return train_trk_array, train_event_array, val_trk_array, val_event_array
 
     def get_kfold_dataset(self, kfolds, cut = "1") -> np.array:
-        trk_array, event_array = self.get_npy_arrays(cut)
+        trk_array, event_array, _ = self.get_npy_arrays(cut)
         nb_events = trk_array.shape[0]
         
         # Get folds indices
         indices = np.arange(nb_events)
         folds_idx = indices % kfolds
 
-        return [(trk_array[folds_idx == i],event_array[folds_idx == i]) for i in range(kfolds)]
+        return [
+            (
+                trk_array[folds_idx == i],
+                event_array[folds_idx == i],
+                ) for i in range(kfolds)
+            ]
         
     def save_arrays(self, filepath):
         ...

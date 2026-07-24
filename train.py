@@ -5,6 +5,7 @@ import hls4ml
 import numpy as np
 
 from DataProcessor import DataProcessor
+from LLPMaker import LLPMaker
 from AutoEncoder import build_qkeras_deepset_film, build_deepset_film, build_decoder
 
 # Select data
@@ -41,9 +42,10 @@ event_columns = [
 # except Exception:
 #     pass
 
-MAX_TRACKS = 64
+MAX_TRACKS = 16
 MAX_EVENTS = 5000
 BATCH_SIZE = 128
+N_EPOCHS = 50
 
 # Read data
 print("Reading data...")
@@ -54,7 +56,7 @@ DP = DataProcessor(
     tree,
     trk_columns,
     event_columns,
-    variables_to_define,
+    variables_to_define = variables_to_define,
     max_events = MAX_EVENTS,
     max_tracks = MAX_TRACKS,
     )
@@ -104,9 +106,9 @@ decoder = build_decoder(
 optimizer = tf.keras.optimizers.legacy.Adam(learning_rate = 1e-3) # Faster for M1/M2 Macs
 
 recon_loss_fn = tf.keras.losses.Huber()
-kl_weight = 1e-3
+kl_weight = 1e-1
 
-for epoch in range(3):
+for epoch in range(N_EPOCHS):
     for step, (trk_batch, event_batch) in enumerate(train_dataset):
 
         # Event level mask for valid tracks
@@ -143,6 +145,35 @@ for epoch in range(3):
 
         if step % 10 == 0:
             print(f"epoch={epoch} step={step} loss={loss_value.numpy():.4f} recon={recon_loss.numpy():.4f} kl={kl_loss.numpy():.4f}")
+
+
+# Convert model and save to ONNX format
+import tf2onnx
+
+spec = (
+    tf.TensorSpec(
+        (None, MAX_TRACKS, len(trk_columns)),
+        tf.float32,
+        name="tracks",
+    ),
+    tf.TensorSpec(
+        (None, MAX_TRACKS, 1),
+        tf.float32,
+        name="mask",
+    ),
+    tf.TensorSpec(
+        (None, len(event_columns)),
+        tf.float32,
+        name="event",
+    ),
+)
+
+model_proto, _ = tf2onnx.convert.from_keras(
+    model,
+    input_signature=spec,
+    opset=17,          # select operation set from ONNX
+    output_path="deepset_film.onnx",
+)
 
 # print("\nWeight and bias summary for model layers:")
 # for layer in model.layers:
