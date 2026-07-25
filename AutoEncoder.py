@@ -112,6 +112,8 @@ def build_deepset_film(
     n_tracks_max,
     n_track_features,
     n_event_features,
+    phi_dim = 16,
+    rho_dim = 16,
     latent_dim=8,
     trk_shift=None,
     trk_scale=None,
@@ -196,13 +198,11 @@ def build_deepset_film(
     # φ : per-track encoder
     # ==========================================================
 
-    x = layers.Dense(16)(x)
+    x = layers.Dense(phi_dim)(x)
     x = layers.ReLU()(x)
 
-    x = layers.Dense(16)(x)
+    x = layers.Dense(phi_dim)(x)
     x = layers.ReLU()(x)
-
-    phi_dim = 16
 
     # ==========================================================
     # ψ : event -> FiLM parameters
@@ -263,12 +263,14 @@ def build_deepset_film(
         name="flatten_features"
     )(x)
 
+    pooled = x
+
     # ==========================================================
     # ρ : event-level network
     # ==========================================================
 
-    x = layers.Dense(16)(x)
-    x = layers.ReLU()(x)
+    rho = layers.Dense(rho_dim)(pooled)
+    rho = layers.ReLU()(rho)
 
     # ==========================================================
     # Gaussian latent parameters
@@ -277,16 +279,16 @@ def build_deepset_film(
     mu = layers.Dense(
         latent_dim,
         name="mu"
-    )(x)
+    )(rho)
 
     logvar = layers.Dense(
         latent_dim,
         name="logvar"
-    )(x)
+    )(rho)
 
     return Model(
         inputs=[tracks_in, mask_in, event_in],
-        outputs=[mu, logvar]
+        outputs=[mu, logvar, rho]
     )
 
 

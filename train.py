@@ -18,10 +18,17 @@ variables_to_define = config["Inputs"]["variables_to_define"]
 trk_columns = config["Inputs"]["trk_columns"]
 event_columns = config["Inputs"]["event_columns"]
 
-MAX_TRACKS = config["Training"]["MAX_TRACKS"]
+MAX_TRACKS = config["Architecture"]["MAX_TRACKS"]
+PHI_DIM = config["Architecture"]["PHI_DIM"]
+RHO_DIM = config["Architecture"]["RHO_DIM"]
+LATENT_DIM = config["Architecture"]["LATENT_DIM"]
+
 MAX_EVENTS = config["Training"]["MAX_EVENTS"]
 BATCH_SIZE = config["Training"]["BATCH_SIZE"]
 N_EPOCHS   = config["Training"]["N_EPOCHS"]
+K_FOLDS   = config["Training"]["K_FOLDS"]
+STOP_RHO_GRADIENT = config["Training"]["STOP_RHO_GRADIENT"]
+
 
 # Force eager execution for debugging
 # This makes tensors concrete and allows .numpy() and simple prints inside the model.
@@ -49,15 +56,23 @@ DP = DataProcessor(
     max_tracks = MAX_TRACKS,
     )
 print("Dividing data into folds...")
-folds = DP.get_kfold_dataset(kfolds = 5, cut = "1")
+folds = DP.get_kfold_dataset(kfolds = K_FOLDS, cut = "1")
 
 print("Computing linear transformation parameters...")
 trk_shift, trk_scale, event_shift, event_scale = DP.get_lin_transform()
 print(trk_shift, trk_scale, event_shift, event_scale)
 print("Transf:", 1/trk_scale, -trk_shift/trk_scale, 1/event_scale, -event_shift/event_scale)
+
+# Organise folds
 # TODO : train multiple models using all folds
-train_trk_array = folds[0][0]
-train_event_array = folds[0][1]
+val_trk_array,val_event_array = folds[0]
+train_trk_array = []
+train_event_array = []
+for i in range(1,len(folds)):
+    train_trk_array.append(folds[i][0])
+    train_event_array.append(folds[i][1])
+train_trk_array = np.concatenate(train_trk_array, axis = 0)
+train_event_array = np.concatenate(train_event_array, axis = 0)
 
 print("Splitting data into batches...")
 # Split into batches
@@ -74,7 +89,9 @@ model = build_deepset_film(
     n_tracks_max=MAX_TRACKS,
     n_track_features=len(trk_columns),
     n_event_features=len(event_columns),
-    latent_dim=8,
+    phi_dim= PHI_DIM,
+    rho_dim= RHO_DIM,
+    latent_dim=LATENT_DIM,
     trk_shift=trk_shift,
     trk_scale=trk_scale,
     event_shift=event_shift,
@@ -85,9 +102,9 @@ print(model.summary())
 
 # Get decoder
 decoder = build_decoder(
-    latent_dim=8,
-    hidden_layers=[16, 16, 8],
-    output_dim=len(event_columns),
+    latent_dim=LATENT_DIM,
+    hidden_layers=[16, 16],
+    output_dim=RHO_DIM,
 )
 
 # optimizer = tf.keras.optimizers.Adam(learning_rate = 1e-3)
@@ -111,16 +128,17 @@ for epoch in range(N_EPOCHS):
 
         with tf.GradientTape() as tape:
             # Get the latent parameters
-            mu, logvar = model([trk_batch, mask_batch, event_batch], training=True)
-    
+            mu, logvar, rho = model([trk_batch, mask_batch, event_batch], training=True)
+            if STOP_RHO_GRADIENT:
+                rho = tf.stop_gradient(rho)
             # Compute the gaussian latent variable z
             eps = tf.random.normal(shape=tf.shape(mu))
             z = mu + tf.exp(0.5 * logvar) * eps
             
             # Reconstruct the event-level features from the latent variable
             reconstruction = decoder(z, training=True)
-
-            recon_loss = recon_loss_fn(event_batch, reconstruction)
+            
+            recon_loss = recon_loss_fn(rho, reconstruction)
             kl_loss = -0.5 * tf.reduce_mean(
                 tf.reduce_sum(1.0 + logvar - tf.square(mu) - tf.exp(logvar), axis=1)
             )

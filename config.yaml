@@ -22,11 +22,20 @@ Inputs:
     - "nTrack"
     - "nJet"
 
+# Parametrise the NN architecture
+Architecture:
+  MAX_TRACKS: 16
+  PHI_DIM: 32
+  RHO_DIM: 16
+  LATENT_DIM: 4
+
 # Training settings  
 Training:
-  MAX_TRACKS: 16
-  MAX_EVENTS: 5000
+  MAX_EVENTS: 25000
   BATCH_SIZE: 128
   N_EPOCHS: 50
+  K_FOLDS : 5
+  STOP_RHO_GRADIENT: True
+
 
   
