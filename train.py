@@ -28,6 +28,7 @@ BATCH_SIZE = config["Training"]["BATCH_SIZE"]
 N_EPOCHS   = config["Training"]["N_EPOCHS"]
 K_FOLDS   = config["Training"]["K_FOLDS"]
 STOP_RHO_GRADIENT = config["Training"]["STOP_RHO_GRADIENT"]
+BETA_KL_WEIGHT = config["Training"]["BETA_KL_WEIGHT"]
 
 
 # Force eager execution for debugging
@@ -111,7 +112,6 @@ decoder = build_decoder(
 optimizer = tf.keras.optimizers.legacy.Adam(learning_rate = 1e-3) # Faster for M1/M2 Macs
 
 recon_loss_fn = tf.keras.losses.Huber()
-kl_weight = 1e-1
 
 for epoch in range(N_EPOCHS):
     for step, (trk_batch, event_batch) in enumerate(train_dataset):
@@ -143,7 +143,7 @@ for epoch in range(N_EPOCHS):
                 tf.reduce_sum(1.0 + logvar - tf.square(mu) - tf.exp(logvar), axis=1)
             )
             
-            loss_value = recon_loss + kl_weight * kl_loss
+            loss_value = recon_loss + BETA_KL_WEIGHT * kl_loss
 
         trainable_vars = model.trainable_weights + decoder.trainable_weights
         gradients = tape.gradient(loss_value, trainable_vars)

@@ -255,7 +255,6 @@ print("Optimisation ending with : ",res_rayleigh.message)
 print("Finall nll = ",nll(res_rayleigh.x, z[z < 1.0], dR[z < 1.0]))
 print("Final result: [sig0, a] = ",res_rayleigh.x)
 
-
 print("Minimising Weibull likelihood...")
 x0 = [0.1, 1.0, 2.0] # initial parameters for sig0, a and k
 res_weibull = minimize(
