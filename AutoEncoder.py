@@ -119,6 +119,7 @@ def build_deepset_film(
     trk_scale=None,
     event_shift=None,
     event_scale=None,
+    vae_output = True,
 ):
 
     # Inputs
@@ -276,20 +277,27 @@ def build_deepset_film(
     # Gaussian latent parameters
     # ==========================================================
 
-    mu = layers.Dense(
-        latent_dim,
-        name="mu"
-    )(rho)
+    if (vae_output):
+        mu = layers.Dense(
+            latent_dim,
+            name="mu"
+        )(rho)
 
-    logvar = layers.Dense(
-        latent_dim,
-        name="logvar"
-    )(rho)
+        logvar = layers.Dense(
+            latent_dim,
+            name="logvar"
+        )(rho)
 
-    return Model(
-        inputs=[tracks_in, mask_in, event_in],
-        outputs=[mu, logvar, rho]
-    )
+        return Model(
+            inputs=[tracks_in, mask_in, event_in],
+            outputs=[mu, logvar, rho]
+        )
+    
+    else:
+        return Model(
+            inputs=[tracks_in, mask_in, event_in],
+            outputs=[rho]
+        )
 
 
 def build_decoder(
