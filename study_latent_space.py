@@ -2,6 +2,7 @@ import ROOT
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.ndimage import gaussian_filter
+from sklearn.metrics import roc_curve, roc_auc_score
 
 from matplotlib.lines import Line2D
 plt.rcParams['text.usetex'] = True
@@ -47,6 +48,30 @@ def plot_gauss_smooth_contour(x,y, label = "", levels = 5, color = "black"):
         label = label, 
         levels = levels, 
         colors = color
+        )
+
+# Computes the square of the mahalanobis distance for a vector z
+def mahalanobis2(z):
+    mu = np.mean(z,axis = 0)
+    Sigma = np.cov(z, rowvar=False)
+    Sigma_inv = np.linalg.pinv(Sigma)
+
+    dz = z - mu
+    return np.einsum("...i,ij,...j->...", dz, Sigma_inv, dz)
+
+# creates an empirical p-value from score distribution (from empirical cdf)
+# reference is the sorted scores we are estimating the cdf of
+def empirical_pvalue(score, reference):
+    idx = np.searchsorted(reference, score, side="right")
+    return 1.0 - idx / len(reference)
+
+# Define s(z)
+def compute_score(DM, reference):
+    return -np.log(
+        np.maximum(
+            empirical_pvalue(DM,reference),
+            1e-12
+            )
         )
 
 # Prepare some input data
@@ -232,5 +257,31 @@ for i in range(RHO_DIM):
         plt.xlabel(f"$r_{i}$")
         plt.ylabel(f"$r_{j}$")
         plt.savefig(f"plots/latent_space_study/rhodim{RHO_DIM}_gauss_r{i}_r{j}.pdf")
-
         plt.close("all")
+
+
+# Compute s(z) for both val and llp
+DM_val = mahalanobis2(val_rho)
+DM_llp = mahalanobis2(llp_rho)
+DM_val_sorted = np.sort(DM_val) 
+
+score_val = compute_score(DM_val, DM_val)
+score_llp = compute_score(DM_llp, DM_llp)
+
+# Plot s(z) distributions
+plt.figure()
+plt.hist(score_val, bins = 30 , histtype="step",label = "validation")
+plt.hist(score_llp, bins = 30 , histtype="step",label = "llp-injected")
+plt.savefig("plots/latent_space_study/score_distributions.pdf")
+
+# AUC of s(z)
+y_pred = np.concatenate([score_llp,score_val],axis = 0)
+y_true = np.concatenate([np.ones(score_llp.shape),np.zeros(score_val.shape)],axis = 0)
+fpr, tpr, thresholds = roc_curve(y_true, y_pred)
+plt.figure()
+plt.title(f"AUC = {roc_auc_score(y_true, y_pred)}")
+plt.plot(fpr, tpr)
+plt.plot([0,1],[0,1],ls = "--",color = "grey")
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate') 
+plt.savefig("plots/latent_space_study/score_ROC.pdf")
