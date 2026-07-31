@@ -13,12 +13,14 @@ class DataProcessor:
         variables_to_define : dict = None,
         max_tracks : int = 64,
         max_events : int = None,
+        filepath : str = None, # filepath to load data from
         ) -> None:
 
         self.trk_columns = trk_columns
         self.event_columns = event_columns
         self.jets_columns = jets_columns
         self.max_tracks = max_tracks
+        self.filepath = filepath
 
         self.tree = tree
         print(f"Tree has {tree.GetEntries()} entries.")
@@ -29,7 +31,7 @@ class DataProcessor:
             self.rdf = self.rdf.Range(max_events)
 
         # Define variables if provided
-        if variables_to_define is not None:
+        if variables_to_define is not None and self.filepath is None:
             for var in variables_to_define:
                 expr = variables_to_define[var]
                 self.rdf = self.rdf.Define(var,expr)
@@ -72,6 +74,11 @@ class DataProcessor:
 
 
     def get_npy_arrays(self, cut = "1"):
+
+        # If filepath indicated, simply read data from file
+        if self.filepath is not None:
+            return self.load_arrays(self.filepath)
+
         rdf_filtered = self.rdf.Filter(cut)
         trk_arrays = rdf_filtered.AsNumpy(self.trk_columns)
         event_arrays = rdf_filtered.AsNumpy(self.event_columns)
@@ -117,25 +124,57 @@ class DataProcessor:
         return train_trk_array, train_event_array, val_trk_array, val_event_array
 
     def get_kfold_dataset(self, kfolds, cut = "1") -> np.array:
-        trk_array, event_array, _ = self.get_npy_arrays(cut)
+        trk_array, event_array, jets_array = self.get_npy_arrays(cut)
         nb_events = trk_array.shape[0]
         
         # Get folds indices
         indices = np.arange(nb_events)
         folds_idx = indices % kfolds
 
-        return [
-            (
-                trk_array[folds_idx == i],
-                event_array[folds_idx == i],
-                ) for i in range(kfolds)
-            ]
+        if jets_array is not None:
+            return [
+                (
+                    trk_array[folds_idx == i],
+                    event_array[folds_idx == i],
+                    jets_array[folds_idx == i]
+                    ) for i in range(kfolds)
+                ]
+        else:
+            return [
+                (
+                    trk_array[folds_idx == i],
+                    event_array[folds_idx == i],
+                    ) for i in range(kfolds)
+                ]
         
     def save_arrays(self, filepath):
-        ...
+        print(
+            self.trk_array.shape,
+            self.event_array.shape,
+            self.jets_array.shape,
+            np.array(self.trk_array).shape,
+              )
+        if self.jets_array is not None:
+            np.savez_compressed(
+                filepath,
+                trk_array= self.trk_array,
+                event_array= self.event_array,
+                jets_array= self.jets_array,
+            )
+        else:
+            np.savez_compressed(
+                filepath,
+                trk_array= self.trk_array,
+                event_array= self.event_array,
+            )
     
     def load_arrays(self, filepath):
-        ...
+        data = np.load(filepath)
+        self.trk_array = data["trk_array"]
+        self.event_array = data["event_array"]
+        self.jets_array = data.get("jets_array", None)
+        return self.trk_array, self.event_array, self.jets_array
+        
 
     # Transform the data to be in range [-1,1]
     def get_lin_transform(self):

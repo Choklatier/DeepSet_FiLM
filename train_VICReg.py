@@ -20,6 +20,11 @@ with open("config.yaml","r") as config_file:
 variables_to_define = config["Inputs"]["variables_to_define"]
 trk_columns = config["Inputs"]["trk_columns"]
 event_columns = config["Inputs"]["event_columns"]
+jet_columns = config["Inputs"]["jet_columns"]
+
+LOAD_ARRAYS = config["Inputs"]["LOAD_ARRAYS"]
+SAVE_ARRAYS = config["Inputs"]["SAVE_ARRAYS"]
+ARRAYS_FILEPATH = config["Inputs"]["ARRAYS_FILEPATH"]
 
 MAX_TRACKS = config["Architecture"]["MAX_TRACKS"]
 PHI_DIM = config["Architecture"]["PHI_DIM"]
@@ -30,9 +35,6 @@ MAX_EVENTS = config["Training"]["MAX_EVENTS"]
 BATCH_SIZE = config["Training"]["BATCH_SIZE"]
 N_EPOCHS   = config["Training"]["N_EPOCHS"]
 K_FOLDS   = config["Training"]["K_FOLDS"]
-STOP_RHO_GRADIENT = config["Training"]["STOP_RHO_GRADIENT"]
-BETA_KL_WEIGHT = config["Training"]["BETA_KL_WEIGHT"]
-
 
 # Force eager execution for debugging
 # This makes tensors concrete and allows .numpy() and simple prints inside the model.
@@ -56,11 +58,18 @@ DP = DataProcessor(
     trk_columns,
     event_columns,
     variables_to_define = variables_to_define,
+    jets_columns= jet_columns,
     max_events = MAX_EVENTS,
     max_tracks = MAX_TRACKS,
+    filepath= ARRAYS_FILEPATH if LOAD_ARRAYS else None # Only indicate filepath if loading
     )
+
 print("Dividing data into folds...")
 folds = DP.get_kfold_dataset(kfolds = K_FOLDS, cut = "1")
+
+# Save arrays if asked
+if SAVE_ARRAYS:
+    DP.save_arrays(ARRAYS_FILEPATH)
 
 print("Computing linear transformation parameters...")
 trk_shift, trk_scale, event_shift, event_scale = DP.get_lin_transform()
@@ -69,7 +78,7 @@ print("Transf:", 1/trk_scale, -trk_shift/trk_scale, 1/event_scale, -event_shift/
 
 # Organise folds
 # TODO : train multiple models using all folds
-val_trk_array,val_event_array = folds[0]
+val_trk_array,val_event_array, _ = folds[0]
 train_trk_array = []
 train_event_array = []
 for i in range(1,len(folds)):

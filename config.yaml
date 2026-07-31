@@ -1,5 +1,11 @@
 # Manages the input data to the NN
 Inputs:
+
+  # Load input arrays if enabled
+  LOAD_ARRAYS : True
+  # Save input arrays if enabled
+  SAVE_ARRAYS : False
+  ARRAYS_FILEPATH : "data.npz"
   
   # Variables to define from available information
   variables_to_define: 
@@ -21,6 +27,13 @@ Inputs:
     - "met_py"
     - "nTrack"
     - "nJet"
+  
+  # columns used to build jet arrays
+  jet_columns:
+    - "jet_pt" 
+    - "jet_eta" 
+    - "jet_phi"
+    - "jet_mass"
 
 # Parametrise the NN architecture
 Architecture:
@@ -39,6 +52,13 @@ Training:
   # For VAE networks
   STOP_RHO_GRADIENT: True
   BETA_KL_WEIGHT : 2 #0.1
+
+  # For VICReg
+  LAMBDA_INV : 1.0 # Invariance loss coeff
+  LAMBDA_VAR : 1.0 # Variance loss coeff
+  LAMBDA_COV : 1.0 # Covariance loss coeff
+  GAMMA : 1.0 # Variance enforced by Variance term
+
 
 
   

@@ -7,6 +7,7 @@ __pycache__/
 *.txt
 *.onnx
 *.log
+*.npz
 plots/
 model_history
 deepset_film_hls4ml/
