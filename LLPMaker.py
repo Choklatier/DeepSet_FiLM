@@ -321,7 +321,7 @@ class LLPMaker:
         if track_charge_idx is not None:
             injected_tracks[:, 0, track_charge_idx] = charge_fermion1
             injected_tracks[:, 1, track_charge_idx] = charge_fermion2
-
+        
         candidate_tracks = np.concatenate([trk_array, injected_tracks], axis=1)
 
         if track_pt_idx is not None:
@@ -335,7 +335,7 @@ class LLPMaker:
             ordering = np.argsort(-track_pt, axis=1, kind="mergesort")
             candidate_tracks = np.take_along_axis(candidate_tracks, ordering[..., None], axis=1)
 
-        return candidate_tracks[:, :n_tracks, :]
+        return candidate_tracks[:, :n_tracks, :], injected_tracks
 
 
 

@@ -28,6 +28,10 @@ with open("config.yaml","r") as config_file:
 variables_to_define = config["Inputs"]["variables_to_define"]
 trk_columns = config["Inputs"]["trk_columns"]
 event_columns = config["Inputs"]["event_columns"]
+jet_columns = config["Inputs"]["jet_columns"]
+
+LOAD_ARRAYS = config["Inputs"]["LOAD_ARRAYS"]
+ARRAYS_FILEPATH = config["Inputs"]["ARRAYS_FILEPATH"]
 
 MAX_TRACKS = config["Architecture"]["MAX_TRACKS"]
 RHO_DIM = config["Architecture"]["RHO_DIM"]
@@ -83,10 +87,11 @@ DP = DataProcessor(
     tree,
     trk_columns,
     event_columns,
-    jets_columns = ["jet_pt", "jet_eta", "jet_phi", "jet_mass"],
+    jets_columns = jet_columns,
     variables_to_define = variables_to_define,
     max_events = MAX_EVENTS,
     max_tracks = MAX_TRACKS,
+    filepath= ARRAYS_FILEPATH if LOAD_ARRAYS else None # Only indicate filepath if loading
     )
 print("Dividing data into folds...")
 folds = DP.get_kfold_dataset(kfolds = K_FOLDS, cut = "1")
@@ -116,9 +121,9 @@ val_mask = val_mask.astype(np.float32, copy=False)
 
 # Inject some LLPs
 llp_maker = LLPMaker(val_trk_array, val_jets_array, trk_columns)
-llp_trk_array = llp_maker.sample_LLP_tracks(
+llp_trk_array, llp_injected_tracks = llp_maker.sample_LLP_tracks(
         mass=100, # GeV
-        lifetime=1e-9, # seconds
+        lifetime=1e-11, # seconds
         alpha=2.0,
         beta=5.0,
         sig_0=0.1,
@@ -127,6 +132,37 @@ llp_trk_array = llp_maker.sample_LLP_tracks(
         different_fermion_flavors=False,
         debug_return = False
     )
+
+
+# Plot observables of the injected tracks
+for observable in trk_columns:
+    plt.figure()
+    plt.hist(
+        llp_injected_tracks[:,0,llp_maker.trk_columns.index(observable)],
+        bins = 100,
+        histtype = "step",
+        label = f"Injected tracks 1",
+        density = True,
+        )
+    plt.hist(
+        llp_injected_tracks[:,1,llp_maker.trk_columns.index(observable)],
+        bins = 100,
+        histtype = "step",
+        label = f"Injected tracks 2",
+        density = True,
+        )
+    plt.hist(val_trk_array[:,0,llp_maker.trk_columns.index(observable)], 
+             bins = 100, 
+             histtype = "step", 
+             label = fr"highest $p_T$ validation track",
+             density = True,
+             )
+
+    plt.yscale("log")
+    plt.xlabel(observable)
+    plt.ylabel("Events")
+    plt.legend()
+    plt.savefig(f"plots/llp_tracks/{observable}.pdf")
 
 # Load model with ONNX to check it
 onnx_model = onnx.load("deepset_film.onnx")
