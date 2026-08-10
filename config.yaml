@@ -38,14 +38,15 @@ Inputs:
 # Parametrise the NN architecture
 Architecture:
   MAX_TRACKS: 16
-  PHI_DIM: 32
+  PHI_DIM: 64
+  ATTENTION_HIDDEN_DIM: 8
   RHO_DIM: 8
   LATENT_DIM: 4
 
 # Training settings  
 Training:
   MAX_EVENTS: 100000
-  BATCH_SIZE: 512
+  BATCH_SIZE: 256
   N_EPOCHS: 6
   K_FOLDS : 5
 

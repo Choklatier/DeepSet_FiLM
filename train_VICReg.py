@@ -28,6 +28,7 @@ ARRAYS_FILEPATH = config["Inputs"]["ARRAYS_FILEPATH"]
 
 MAX_TRACKS = config["Architecture"]["MAX_TRACKS"]
 PHI_DIM = config["Architecture"]["PHI_DIM"]
+ATTENTION_HIDDEN_DIM = config["Architecture"]["ATTENTION_HIDDEN_DIM"]
 RHO_DIM = config["Architecture"]["RHO_DIM"]
 LATENT_DIM = config["Architecture"]["LATENT_DIM"]
 
@@ -35,6 +36,9 @@ MAX_EVENTS = config["Training"]["MAX_EVENTS"]
 BATCH_SIZE = config["Training"]["BATCH_SIZE"]
 N_EPOCHS   = config["Training"]["N_EPOCHS"]
 K_FOLDS   = config["Training"]["K_FOLDS"]
+LAMBDA_INV = config["Training"]["LAMBDA_INV"]
+LAMBDA_VAR = config["Training"]["LAMBDA_VAR"]
+LAMBDA_COV = config["Training"]["LAMBDA_COV"]
 
 # Force eager execution for debugging
 # This makes tensors concrete and allows .numpy() and simple prints inside the model.
@@ -106,6 +110,7 @@ model = build_deepset_film(
     n_tracks_max=MAX_TRACKS,
     n_track_features=len(trk_columns),
     n_event_features=len(event_columns),
+    attention_hidden_dim=ATTENTION_HIDDEN_DIM,
     phi_dim= PHI_DIM,
     rho_dim= RHO_DIM,
     latent_dim=LATENT_DIM,
@@ -174,7 +179,10 @@ for epoch in range(N_EPOCHS):
 
             loss_value, sim_loss, var_loss, cov_loss = vicreg_loss(
                 rho1,
-                rho2
+                rho2,
+                lambda_inv=LAMBDA_INV,
+                lambda_var=LAMBDA_VAR,
+                lambda_cov=LAMBDA_COV,
             )
 
 

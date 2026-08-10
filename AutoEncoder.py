@@ -113,6 +113,7 @@ def build_deepset_film(
     n_track_features,
     n_event_features,
     phi_dim = 16,
+    attention_hidden_dim = 8,
     rho_dim = 16,
     latent_dim=8,
     trk_shift=None,
@@ -239,14 +240,72 @@ def build_deepset_film(
     x = layers.Multiply()([x, mask_in])
 
     # ==========================================================
-    # Deep Sets pooling
+    # Attention pooling
     # ==========================================================
+
+    # ----------------------------------------------------------
+    # Value branch:
+    # project each track representation from phi_dim -> rho_dim
+    # ----------------------------------------------------------
+
+    v = layers.Dense(
+        rho_dim,
+        name="value_projection"
+    )(x)
+
+    v = layers.ReLU(
+        name="value_activation"
+    )(v)
+    # v: (batch, n_tracks_max, rho_dim)
+
+    # ----------------------------------------------------------
+    # Attention/gating branch:
+    # phi_dim -> small hidden dimension -> scalar
+    # ----------------------------------------------------------
+
+    g = layers.Dense(
+        attention_hidden_dim,
+        name="attention_hidden"
+    )(x)
+
+    g = layers.ReLU(
+        name="attention_hidden_activation"
+    )(g)
+
+    g = layers.Dense(
+        1,
+        name="attention_score"
+    )(g)
+
+    g = layers.ReLU(
+        name="attention_score_activation"
+    )(g)
+    # g: (batch, n_tracks_max, 1)
+
+
+    # ----------------------------------------------------------
+    # Apply track mask to attention weights
+    # ----------------------------------------------------------
+
+    g = layers.Multiply(
+        name="attention_mask"
+    )([g, mask_in])
+
+    # ----------------------------------------------------------
+    # Weight each track's value representation
+    # ----------------------------------------------------------
+
+    weighted_v = layers.Multiply(
+        name="attention_weighting"
+    )([v, g])
+    # weighted_v: (batch, n_tracks_max, rho_dim)
 
     # Permute to (batch, features, tracks), to sum over tracks!
     x = layers.Permute(
         (2, 1),
         name="permute_tracks_features"
-    )(x)
+    )(weighted_v)
+    # x: (batch, rho_dim, n_tracks_max)
 
     # Dense layer with constant weights to sum over tracks
     x = layers.Dense(
