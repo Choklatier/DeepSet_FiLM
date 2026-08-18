@@ -107,7 +107,7 @@ class DataProcessor:
         self.trk_array = trk_array_output.T
         self.event_array = event_array_output.T
         self.jets_array = jets_array_output
-
+        
         return trk_array_output.T, event_array_output.T, jets_array_output
 
     def get_split_dataset(self, val_fraction, cut = "1") -> np.array:

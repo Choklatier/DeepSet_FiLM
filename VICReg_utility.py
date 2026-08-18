@@ -4,16 +4,43 @@ import numpy as np
 # -------------------------------------------------
 # trk_array & event augmentations
 # -------------------------------------------------
-def rotate_phi_augmentation(
+def augment_tracks(
         trk_batch, 
         event_batch,
+        mask_batch,
         trk_columns,
-        event_columns
+        event_columns,
+        boost_max = None,
+        track_mask_prob = None,
         ):
     """
-    Apply a global azimuthal rotation.
-    Tracks and MET are rotated consistently.
+    Apply VICReg augmentations:
+
+      1. Global azimuthal rotation
+      2. Global longitudinal boost (implemented as eta shift)
+      3. Random whole-track masking
+
+    Both the track features and MET are transformed consistently
+    where appropriate.
+
+    Parameters
+    ----------
+    boost_max : float
+        Maximum absolute boost rapidity y_b.
+        y_b is sampled uniformly from [-boost_max, boost_max].
+
+    track_mask_prob : float
+        Probability of masking an otherwise-valid track.
     """
+
+    # Copy tensors
+    trk_aug = tf.identity(trk_batch)
+    event_aug = tf.identity(event_batch)
+    mask_aug = tf.identity(mask_batch)
+
+    # ------------------------------------------------------------
+    # 1. Global azimuthal rotation
+    # ------------------------------------------------------------
 
     delta_phi = tf.random.uniform(
         shape=(),
@@ -24,10 +51,6 @@ def rotate_phi_augmentation(
 
     c = tf.cos(delta_phi)
     s = tf.sin(delta_phi)
-
-    # Copy tensors
-    trk_aug = tf.identity(trk_batch)
-    event_aug = tf.identity(event_batch)
 
     # Rotate track px, py
     trk_px_idx = trk_columns.index("trk_px")
@@ -98,7 +121,66 @@ def rotate_phi_augmentation(
         tf.reshape(met_py_rot, [-1]),
     )
 
-    return trk_aug, event_aug
+    # ------------------------------------------------------------
+    # 2. Longitudinal boost
+    # ------------------------------------------------------------
+    #
+    # For relativistic tracks:
+    #
+    #     eta' ~= eta - y_b
+    #
+    # where y_b is the boost rapidity.
+    #
+    # ------------------------------------------------------------
+
+    if boost_max is not None:
+        eta_idx = trk_columns.index("trk_eta")
+
+        # Sample one global boost for the entire batch
+        y_b = tf.random.uniform(
+            shape=(),
+            minval=-boost_max,
+            maxval=boost_max,
+            dtype=trk_aug.dtype,
+        )
+
+        eta = trk_aug[:, :, eta_idx]
+        eta_boost = eta - y_b
+
+        # Replace the eta feature
+        trk_aug = tf.concat(
+            [
+                trk_aug[:, :, :eta_idx],
+                eta_boost[:, :, tf.newaxis],
+                trk_aug[:, :, eta_idx + 1:],
+            ],
+            axis=-1,
+        )
+
+    # ------------------------------------------------------------
+    # 3. Random whole-track masking
+    # ------------------------------------------------------------
+    if track_mask_prob is not None:
+        # Randomly decide which track slots are kept
+        # Shape: (batch_size, n_tracks)
+        random_keep = (
+            tf.random.uniform(
+                shape=(batch_size, n_tracks),
+                dtype=trk_aug.dtype
+            ) >= track_mask_prob
+        )
+
+        # Shape: (batch_size, n_tracks, 1)
+        random_keep = random_keep[..., tf.newaxis]
+
+        # Combine with the original validity mask
+        mask_aug = mask_batch * tf.cast(random_keep, mask_batch.dtype)
+
+        # Mask the corresponding track features
+        trk_aug = trk_aug * tf.cast(mask_aug, trk_aug.dtype)
+        
+
+    return trk_aug, event_aug, mask_aug
 
 # ----------------------------------------------------------------------
 # VIGReg Losses
@@ -141,9 +223,9 @@ def vicreg_covariance_loss(x):
 def vicreg_loss(
     rho1,
     rho2,
-    lambda_inv=25.0,
-    lambda_var=25.0,
-    lambda_cov=1.0
+    lambda_inv,
+    lambda_var,
+    lambda_cov,
 ):
 
     # Invariance
