@@ -3,12 +3,13 @@ import tensorflow as tf
 from tensorflow.keras import Model, layers
 import hls4ml
 import numpy as np
+import matplotlib.pyplot as plt
 
 from DataProcessor import DataProcessor
 from LLPMaker import LLPMaker
 from AutoEncoder import build_qkeras_deepset_film, build_deepset_film
 
-from VICReg_utility import rotate_phi_augmentation
+from VICReg_utility import augment_tracks
 from VICReg_utility import vicreg_loss
 
 import yaml
@@ -127,8 +128,20 @@ print(model.summary())
 # optimizer = tf.keras.optimizers.Adam(learning_rate = 1e-3)
 optimizer = tf.keras.optimizers.legacy.Adam(learning_rate = 1e-3) # Faster for M1/M2 Macs
 
-for epoch in range(N_EPOCHS):
+total_losses = []
+total_losses_std = []
+inv_losses = []
+inv_losses_std = []
+var_losses = []
+var_losses_std = []
+cov_losses = []
+cov_losses_std = []
 
+for epoch in range(N_EPOCHS):
+    total_loss_per_epoch = []
+    inv_loss_per_epoch = []
+    var_loss_per_epoch = []
+    cov_loss_per_epoch = []
     for step, (trk_batch, event_batch) in enumerate(train_dataset):
 
         # Build mask
@@ -151,29 +164,41 @@ for epoch in range(N_EPOCHS):
             axis=-1
         )
 
-
-        # Create second view
-        trk_aug, event_aug = rotate_phi_augmentation(
+        # Create second two views
+        trk_aug1, event_aug1, mask_aug1 = augment_tracks(
             trk_batch,
             event_batch,
+            mask_batch,
             trk_columns,
-            event_columns
+            event_columns,
+            boost_max= 0.1,
+            track_mask_prob= None,
+        )
+
+        trk_aug2, event_aug2, mask_aug2 = augment_tracks(
+            trk_batch,
+            event_batch,
+            mask_batch,
+            trk_columns,
+            event_columns,
+            boost_max= 0.1,
+            track_mask_prob= None,
         )
 
 
         with tf.GradientTape() as tape:
 
             rho1 = model(
-                [trk_batch,
-                 mask_batch,
-                 event_batch],
+                [trk_aug1,
+                 mask_aug1,
+                 event_aug1],
                 training=True
             )
 
             rho2 = model(
-                [trk_aug,
-                 mask_batch,
-                 event_aug],
+                [trk_aug2,
+                 mask_aug2,
+                 event_aug2],
                 training=True
             )
 
@@ -202,18 +227,74 @@ for epoch in range(N_EPOCHS):
         std = tf.sqrt(
             tf.math.reduce_variance(rho1, axis=0)
         )
+
+        total_loss_per_epoch.append(loss_value.numpy())
+        inv_loss_per_epoch.append(sim_loss.numpy())
+        var_loss_per_epoch.append(var_loss.numpy())
+        cov_loss_per_epoch.append(cov_loss.numpy())
         
         if step % 10 == 0:
             print(
                 f"epoch={epoch} "
                 f"step={step} "
                 f"Total loss={loss_value.numpy():.4f} "
-                f"Inv ={sim_loss.numpy():.4f} ", 
+                f"Inv ={1000 * sim_loss.numpy():.4f} ", 
                 f"Var ={var_loss.numpy():.4f} ", 
                 f"Cov ={cov_loss.numpy():.4f} ",
                 f"std = {std.numpy()}",
             )
+    
+    inv_loss_per_epoch = LAMBDA_INV * np.array(inv_loss_per_epoch)
+    var_loss_per_epoch = LAMBDA_VAR * np.array(var_loss_per_epoch)
+    cov_loss_per_epoch = LAMBDA_COV * np.array(cov_loss_per_epoch)
 
+    total_losses.append(np.mean(total_loss_per_epoch))
+    total_losses_std.append(np.std(total_loss_per_epoch))
+    inv_losses.append(np.mean(inv_loss_per_epoch))
+    inv_losses_std.append(np.std(inv_loss_per_epoch))
+    var_losses.append(np.mean(var_loss_per_epoch))
+    var_losses_std.append(np.std(var_loss_per_epoch))
+    cov_losses.append(np.mean(cov_loss_per_epoch))
+    cov_losses_std.append(np.std(cov_loss_per_epoch))
+    print("Epoch summary:")
+    print(
+        f"epoch={epoch} "
+        f"Mean Total Loss = {np.mean(total_loss_per_epoch):.4f} "
+        f"Mean Inv Loss = {np.mean(inv_loss_per_epoch):.4f} "
+        f"Mean Var Loss = {np.mean(var_loss_per_epoch):.4f} "
+        f"Mean Cov Loss = {np.mean(cov_loss_per_epoch):.4f} "
+        )
+    print("")
+
+plt.figure()
+plt.errorbar(
+    np.arange(0,len(total_losses_std),1),
+    total_losses,
+    yerr=total_losses_std,
+    label = "Total loss",
+    )
+plt.errorbar(
+    np.arange(0,len(total_losses_std),1),
+    inv_losses,
+    yerr=inv_losses_std,
+    label = "Invariance loss",
+    )
+plt.errorbar(
+    np.arange(0,len(total_losses_std),1),
+    var_losses,
+    yerr=var_losses_std,
+    label = "Variance loss",
+    )
+plt.errorbar(
+    np.arange(0,len(total_losses_std),1),
+    cov_losses,
+    yerr=cov_losses_std,
+    label = "Covariance loss",
+    )
+plt.xlabel("epochs")
+plt.ylabel("loss")
+plt.legend()
+plt.savefig("loss.pdf")
 
 # Convert model and save to ONNX format
 import tf2onnx
