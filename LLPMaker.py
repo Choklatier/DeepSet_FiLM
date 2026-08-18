@@ -116,7 +116,8 @@ class LLPMaker:
         a : float, # for input to Rayleigh distribution for the transverse momentum
         opposite_charge_fermions : bool = True,
         different_fermion_flavors : bool = False,
-        debug_return : bool = False
+        debug_return : bool = False,
+        min_lifetime : float = None
         ):
         """
         Sample a resonance with a given mass and lifetime, and produce two tracks associated with it.
@@ -192,6 +193,9 @@ class LLPMaker:
             lifetime,
             N_events
         )
+        if min_lifetime is not None:
+            proper_time[proper_time < min_lifetime] = min_lifetime
+        
         distance = (
             pmag/mass
         )*LIGHT_SPEED*proper_time
@@ -336,7 +340,6 @@ class LLPMaker:
             candidate_tracks = np.take_along_axis(candidate_tracks, ordering[..., None], axis=1)
 
         return candidate_tracks[:, :n_tracks, :], injected_tracks
-
 
 
     def save_arrays(self, filepath : str):

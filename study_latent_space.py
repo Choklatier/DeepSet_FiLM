@@ -123,14 +123,15 @@ val_mask = val_mask.astype(np.float32, copy=False)
 llp_maker = LLPMaker(val_trk_array, val_jets_array, trk_columns)
 llp_trk_array, llp_injected_tracks = llp_maker.sample_LLP_tracks(
         mass=100, # GeV
-        lifetime=1e-11, # seconds
+        lifetime=1e-9, # seconds
         alpha=2.0,
         beta=5.0,
         sig_0=0.1,
         a=1.0,
         opposite_charge_fermions=True,
         different_fermion_flavors=False,
-        debug_return = False
+        debug_return = False,
+        min_lifetime = 1e-9,
     )
 
 
@@ -200,22 +201,52 @@ val_rho = val_outputs[0]
 train_rho = train_outputs[0]
 llp_rho = llp_outputs[0]
 for i in range(RHO_DIM):
+
+    val_ri = val_rho[::100,i]
+    
+    train_ri = train_rho[::100,i]
+    train_ri_mean = np.mean(train_rho[:,i], axis = 0)
+    
+    llp_ri = llp_rho[::100,i]
+    llp_ri_mean = np.mean(llp_rho[:,i], axis = 0)
+
+    plt.figure()
+    heights, bins_val, _ = plt.hist(
+        val_rho[:,i], 
+        histtype="step", 
+        label = "validation", 
+        density = True
+        )
+    plt.hist(
+        train_rho[:,i], 
+        bins = bins_val , 
+        histtype="step", 
+        label = "training",
+        density = True
+        )
+    plt.hist(
+        llp_rho[:,i], 
+        bins = bins_val, 
+        histtype="step", 
+        label = "llp injected",
+        density = True
+        )
+    plt.xlabel(f"$r_{i}$")
+    plt.legend()
+    plt.savefig(f"plots/latent_space_study/hist_rhodim{RHO_DIM}_r{i}.pdf")
+
     for j in range(RHO_DIM):
         if i >= j : continue
 
-        val_ri = val_rho[::100,i]
+        
         val_rj = val_rho[::100,j]
         val_ri_mean = np.mean(val_rho[:,i], axis = 0)
         val_rj_mean = np.mean(val_rho[:,j], axis = 0)
 
-        train_ri = train_rho[::100,i]
         train_rj = train_rho[::100,j]
-        train_ri_mean = np.mean(train_rho[:,i], axis = 0)
         train_rj_mean = np.mean(train_rho[:,j], axis = 0)
 
-        llp_ri = llp_rho[::100,i]
         llp_rj = llp_rho[::100,j]
-        llp_ri_mean = np.mean(llp_rho[:,i], axis = 0)
         llp_rj_mean = np.mean(llp_rho[:,j], axis = 0)
 
         print(f"For r{i} - r{j} means:")
