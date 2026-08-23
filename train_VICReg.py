@@ -32,6 +32,7 @@ PHI_DIM = config["Architecture"]["PHI_DIM"]
 ATTENTION_HIDDEN_DIM = config["Architecture"]["ATTENTION_HIDDEN_DIM"]
 RHO_DIM = config["Architecture"]["RHO_DIM"]
 LATENT_DIM = config["Architecture"]["LATENT_DIM"]
+N_HIDDEN_LAYERS = config["Architecture"]["N_HIDDEN_LAYERS"]
 
 MAX_EVENTS = config["Training"]["MAX_EVENTS"]
 BATCH_SIZE = config["Training"]["BATCH_SIZE"]
@@ -40,6 +41,7 @@ K_FOLDS   = config["Training"]["K_FOLDS"]
 LAMBDA_INV = config["Training"]["LAMBDA_INV"]
 LAMBDA_VAR = config["Training"]["LAMBDA_VAR"]
 LAMBDA_COV = config["Training"]["LAMBDA_COV"]
+LEARNING_RATE = config["Training"]["LEARNING_RATE"]
 
 # Force eager execution for debugging
 # This makes tensors concrete and allows .numpy() and simple prints inside the model.
@@ -115,6 +117,7 @@ model = build_deepset_film(
     phi_dim= PHI_DIM,
     rho_dim= RHO_DIM,
     latent_dim=LATENT_DIM,
+    n_hidden_layers_tracks=N_HIDDEN_LAYERS,
     trk_shift=trk_shift,
     trk_scale=trk_scale,
     event_shift=event_shift,
@@ -125,8 +128,8 @@ model = build_deepset_film(
 print(model.summary())
 
 
-# optimizer = tf.keras.optimizers.Adam(learning_rate = 1e-3)
-optimizer = tf.keras.optimizers.legacy.Adam(learning_rate = 1e-3) # Faster for M1/M2 Macs
+# optimizer = tf.keras.optimizers.Adam(learning_rate = LEARNING_RATE)
+optimizer = tf.keras.optimizers.legacy.Adam(learning_rate = LEARNING_RATE) # Faster for M1/M2 Macs
 
 total_losses = []
 total_losses_std = []

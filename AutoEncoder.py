@@ -116,6 +116,7 @@ def build_deepset_film(
     attention_hidden_dim = 8,
     rho_dim = 16,
     latent_dim=8,
+    n_hidden_layers_tracks = 2,
     trk_shift=None,
     trk_scale=None,
     event_shift=None,
@@ -200,11 +201,9 @@ def build_deepset_film(
     # φ : per-track encoder
     # ==========================================================
 
-    x = layers.Dense(phi_dim)(x)
-    x = layers.ReLU()(x)
-
-    x = layers.Dense(phi_dim)(x)
-    x = layers.ReLU()(x)
+    for _ in range(n_hidden_layers_tracks):
+        x = layers.Dense(phi_dim)(x)
+        x = layers.ReLU()(x)
 
     # ==========================================================
     # ψ : event -> FiLM parameters

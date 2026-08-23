@@ -37,25 +37,27 @@ Inputs:
 
 # Parametrise the NN architecture
 Architecture:
-  MAX_TRACKS: 16
-  PHI_DIM: 64
+  MAX_TRACKS: 32
+  PHI_DIM: 256
   ATTENTION_HIDDEN_DIM: 8
   RHO_DIM: 8
   LATENT_DIM: 4
+  N_HIDDEN_LAYERS: 2
 
 # Training settings  
 Training:
   MAX_EVENTS: 100000
   BATCH_SIZE: 256
-  N_EPOCHS: 6
+  N_EPOCHS: 20
   K_FOLDS : 5
+  LEARNING_RATE : 0.0001
 
   # For VAE networks
   STOP_RHO_GRADIENT: True
   BETA_KL_WEIGHT : 2 #0.1
 
   # For VICReg
-  LAMBDA_INV : 1.0 # Invariance loss coeff
+  LAMBDA_INV : 10.0 # Invariance loss coeff
   LAMBDA_VAR : 1.0 # Variance loss coeff
   LAMBDA_COV : 1.0 # Covariance loss coeff
   GAMMA : 1.0 # Variance enforced by Variance term
