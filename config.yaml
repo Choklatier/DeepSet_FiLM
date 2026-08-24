@@ -2,22 +2,28 @@
 Inputs:
 
   # Load input arrays if enabled
-  LOAD_ARRAYS : True
+  LOAD_ARRAYS : False
   # Save input arrays if enabled
-  SAVE_ARRAYS : False
+  SAVE_ARRAYS : True
   ARRAYS_FILEPATH : "data.npz"
   
   # Variables to define from available information
   variables_to_define: 
     "met_px" : "met_pt * cos(met_phi)"
     "met_py" : "met_pt * sin(met_phi)"
-  
+    "trk_x_pca" : "-trk_d0 * sin(trk_phi)"
+    "trk_y_pca" : "trk_d0 * cos(trk_phi)"
+
   # columns used for tracks features
   trk_columns:
+    - "trk_x_pca"
+    - "trk_y_pca"
     - "trk_d0"
     - "trk_z0"
-    - "trk_px"
-    - "trk_py"
+    - "trk_pt"
+    - "trk_phi"
+    # - "trk_px"
+    # - "trk_py"
     - "trk_eta"
     - "trk_charge"
   

@@ -38,6 +38,7 @@ class DataProcessor:
         
         # Store last computed arrays
         self.trk_array = None
+        self.trk_pairs_array = None
         self.event_array = None
         self.jets_array = None
 
@@ -110,6 +111,76 @@ class DataProcessor:
         
         return trk_array_output.T, event_array_output.T, jets_array_output
 
+    def get_track_pairs(
+        self,
+        radius,
+        max_pairs,
+        cut="1",
+        position_columns=("trk_x_pca", "trk_y_pca", "trk_z0"),
+    ):
+        """Build permutation-invariant feature vectors for nearby track pairs.
+
+        A pair is selected when the Euclidean distance between its position
+        coordinates is at most ``radius``. Each selected pair is represented
+        by ``[abs(track_1 - track_2), track_1 + track_2]`` and the result is
+        padded with zeros to ``max_pairs`` per event.
+        """
+        if radius < 0:
+            raise ValueError("radius must be non-negative")
+        if max_pairs < 0:
+            raise ValueError("max_pairs must be non-negative")
+        if len(position_columns) != 3:
+            raise ValueError("position_columns must contain three columns")
+
+        trk_array, event_array, jets_array = self.get_npy_arrays(cut)
+        position_indices = []
+        for column in position_columns:
+            if column not in self.trk_columns:
+                raise ValueError(f"Track position column '{column}' is not configured")
+            position_indices.append(self.trk_columns.index(column))
+
+        n_events, _, n_features = trk_array.shape
+        trk_pairs_array = np.zeros(
+            (n_events, max_pairs, n_features * 2),
+            dtype=trk_array.dtype,
+        )
+
+        for event_index, tracks in enumerate(trk_array):
+            valid_tracks = np.any(tracks != 0, axis=1)
+            valid_indices = np.flatnonzero(valid_tracks)
+            if len(valid_indices) < 2 or max_pairs == 0:
+                continue
+
+            valid_tracks = tracks[valid_indices]
+            positions = valid_tracks[:, position_indices]
+            pair_indices = np.triu_indices(len(valid_tracks), k=1)
+            pair_distances = np.linalg.norm(
+                positions[pair_indices[0]] - positions[pair_indices[1]],
+                axis=1,
+            )
+            selected = np.flatnonzero(pair_distances <= radius)
+            if len(selected) == 0:
+                continue
+
+            pair_features = np.concatenate(
+                [
+                    np.abs(
+                        valid_tracks[pair_indices[0][selected]]
+                        - valid_tracks[pair_indices[1][selected]]
+                    ),
+                    valid_tracks[pair_indices[0][selected]]
+                    + valid_tracks[pair_indices[1][selected]],
+                ],
+                axis=1,
+            )
+            ordering = np.lexsort(pair_features.T[::-1], axis=0)
+            ordering = ordering[np.argsort(pair_distances[selected][ordering], kind="stable")]
+            pair_features = pair_features[ordering[:max_pairs]]
+            trk_pairs_array[event_index, :len(pair_features)] = pair_features
+
+        self.trk_pairs_array = trk_pairs_array
+        return trk_pairs_array, event_array, jets_array
+
     def get_split_dataset(self, val_fraction, cut = "1") -> np.array:
         trk_array, event_array, jets_array = self.get_npy_arrays(cut)
         nb_events = trk_array.shape[0]
@@ -154,28 +225,23 @@ class DataProcessor:
             self.jets_array.shape,
             np.array(self.trk_array).shape,
               )
-        if self.jets_array is not None:
-            np.savez_compressed(
-                filepath,
-                trk_array= self.trk_array,
-                event_array= self.event_array,
-                jets_array= self.jets_array,
-            )
-        else:
-            np.savez_compressed(
-                filepath,
-                trk_array= self.trk_array,
-                event_array= self.event_array,
-            )
+
+        np.savez_compressed(
+            filepath,
+            trk_array= self.trk_array,
+            event_array= self.event_array,
+            jets_array= self.jets_array if self.jets_array is not None else np.array([]),
+            trk_pairs_array= self.trk_pairs_array if self.trk_pairs_array is not None else np.array([]),
+        )
     
     def load_arrays(self, filepath):
         data = np.load(filepath)
         self.trk_array = data["trk_array"]
         self.event_array = data["event_array"]
         self.jets_array = data.get("jets_array", None)
-        return self.trk_array, self.event_array, self.jets_array
+        self.trk_pairs_array = data.get("trk_pairs_array", None)
+        return self.trk_array, self.event_array, self.jets_array, self.trk_pairs_array
         
-
     # Transform the data to be in range [-1,1]
     def get_lin_transform(self):
         if self.trk_array is None or self.event_array is None:
