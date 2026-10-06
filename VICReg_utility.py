@@ -1,6 +1,17 @@
 import tensorflow as tf
 import numpy as np
 
+
+def randomly_mask_track_instances(trk_batch, mask_batch, mask_probability=0.1):
+    """Create a track/pair-dropout view while preserving feature values."""
+    keep = tf.cast(
+        tf.random.uniform(tf.shape(mask_batch), dtype=trk_batch.dtype)
+        >= mask_probability,
+        mask_batch.dtype,
+    )
+    return trk_batch, mask_batch * keep
+
+
 # -------------------------------------------------
 # trk_array & event augmentations
 # -------------------------------------------------

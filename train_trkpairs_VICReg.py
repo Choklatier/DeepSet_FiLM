@@ -28,6 +28,9 @@ ARRAYS_FILEPATH = config["Inputs"]["JET_MATCHED_ARRAYS_FILEPATH"]
 
 MAX_TRACKS = config["Architecture"]["MAX_TRACKS"]
 MAX_JETS = 6
+MAX_TRACK_PAIRS = 10
+PAIR_FEATURES = 2 * len(trk_columns) + ("trk_phi" in trk_columns)
+TRACK_PAIRS_RADIUS = 0.1
 PHI_DIM = config["Architecture"]["PHI_DIM"]
 ATTENTION_HIDDEN_DIM = config["Architecture"]["ATTENTION_HIDDEN_DIM"]
 RHO_DIM = config["Architecture"]["RHO_DIM"]
@@ -49,22 +52,7 @@ def flatten_jet_examples(tracks, events, jets):
     jet_events = np.repeat(events[:, np.newaxis, :], jets.shape[1], axis=1)
     jet_context = np.concatenate((jet_events, jets), axis=-1)
     valid_jets = np.any(jets != 0, axis=-1)
-    tracks = tracks[valid_jets]
-    if "trk_phi" in trk_columns:
-        phi_index = trk_columns.index("trk_phi")
-        valid_tracks = np.any(tracks != 0, axis=-1)
-        phi = tracks[..., phi_index]
-        tracks = np.concatenate(
-            (
-                tracks[..., :phi_index],
-                np.sin(phi)[..., np.newaxis],
-                np.cos(phi)[..., np.newaxis],
-                tracks[..., phi_index + 1:],
-            ),
-            axis=-1,
-        )
-        tracks = np.where(valid_tracks[..., np.newaxis], tracks, 0)
-    return tracks, jet_context[valid_jets]
+    return tracks[valid_jets], jet_context[valid_jets]
 
 
 def linear_stats(values, axes, valid_mask=None):
@@ -109,9 +97,10 @@ DP = DataProcessor(
 print("Dividing data into folds...")
 folds = DP.get_jet_matched_kfold_dataset(
     kfolds=K_FOLDS,
-    cut="1",
     max_jets=MAX_JETS,
-    max_pairs=None,
+    max_pairs=MAX_TRACK_PAIRS,
+    radius=TRACK_PAIRS_RADIUS,
+    cut="1",
 )
 
 # Save arrays if asked
@@ -119,25 +108,25 @@ if SAVE_ARRAYS:
     DP.save_jet_matched_arrays(ARRAYS_FILEPATH)
 
 print("Computing linear transformation parameters...")
-all_jet_context = np.concatenate(
-    [flatten_jet_examples(fold[0], fold[1], fold[2])[1] for fold in folds],
-    axis=0,
-)
-event_shift, event_scale = linear_stats(all_jet_context, axes=0)
 fold_examples = [
-    flatten_jet_examples(fold[0], fold[1], fold[2])
+    flatten_jet_examples(fold[3], fold[1], fold[2])
     for fold in folds
 ]
-all_track_examples = np.concatenate(
+all_track_pair_examples = np.concatenate(
     [examples[0] for examples in fold_examples],
     axis=0,
 )
-valid_tracks = np.any(all_track_examples != 0, axis=-1)
-trk_shift, trk_scale = linear_stats(
-    all_track_examples,
-    axes=(0, 1),
-    valid_mask=valid_tracks,
+all_jet_context = np.concatenate(
+    [examples[1] for examples in fold_examples],
+    axis=0,
 )
+valid_track_pairs = np.any(all_track_pair_examples != 0, axis=-1)
+trk_shift, trk_scale = linear_stats(
+    all_track_pair_examples,
+    axes=(0, 1),
+    valid_mask=valid_track_pairs,
+)
+event_shift, event_scale = linear_stats(all_jet_context, axes=0)
 print(trk_shift, trk_scale, event_shift, event_scale)
 print("Transf:", 1/trk_scale, -trk_shift/trk_scale, 1/event_scale, -event_shift/event_scale)
 
@@ -154,11 +143,13 @@ train_event_array = np.concatenate(
 # Convert to float32 (float vs double conflicts)
 train_trk_array = train_trk_array.astype(np.float32, copy=False)
 train_event_array = train_event_array.astype(np.float32, copy=False)
-
 print("Splitting data into batches...")
 # Split into batches
-train_dataset = tf.data.Dataset.from_tensor_slices((train_trk_array, train_event_array))
-train_dataset = train_dataset.batch(batch_size = BATCH_SIZE)
+train_dataset = (
+    tf.data.Dataset.from_tensor_slices((train_trk_array, train_event_array))
+    .shuffle(len(train_trk_array), reshuffle_each_iteration=True)
+    .batch(batch_size = BATCH_SIZE)
+    )
 print("Shape of train_trk_array: ", train_trk_array.shape)
 print("Shape of train_event_array: ", train_event_array.shape)
 print("Number of batches:",len(train_dataset))
@@ -167,8 +158,8 @@ print("Building the models...")
 # build model
 # model = build_qkeras_deepset_film(
 model = build_deepset_film(
-    n_tracks_max=MAX_TRACKS,
-    n_track_features=len(trk_columns) + ("trk_phi" in trk_columns),
+    n_tracks_max=MAX_TRACK_PAIRS,
+    n_track_features=PAIR_FEATURES,
     n_event_features=len(event_columns) + len(jet_columns),
     attention_hidden_dim=ATTENTION_HIDDEN_DIM,
     phi_dim= PHI_DIM,
@@ -204,10 +195,12 @@ for epoch in range(N_EPOCHS):
     cov_loss_per_epoch = []
     for step, (trk_batch, event_batch) in enumerate(train_dataset):
 
+        # Build mask
         mask_batch = tf.cast(
             tf.reduce_any(trk_batch != 0.0, axis=-1),
-            tf.float32,
+            tf.float32
         )[..., tf.newaxis]
+
         trk_aug1, mask_aug1 = randomly_mask_track_instances(
             trk_batch, mask_batch
         )
@@ -333,12 +326,12 @@ import tf2onnx
 
 spec = (
     tf.TensorSpec(
-        (None, MAX_TRACKS, len(trk_columns) + ("trk_phi" in trk_columns)),
+        (None, MAX_TRACK_PAIRS, PAIR_FEATURES),
         tf.float32,
-        name="tracks",
+        name="track_pairs",
     ),
     tf.TensorSpec(
-        (None, MAX_TRACKS, 1),
+        (None, MAX_TRACK_PAIRS, 1),
         tf.float32,
         name="mask",
     ),

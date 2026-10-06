@@ -6,6 +6,7 @@ Inputs:
   # Save input arrays if enabled
   SAVE_ARRAYS : True
   ARRAYS_FILEPATH : "data.npz"
+  JET_MATCHED_ARRAYS_FILEPATH : "jet_matched_data.npz"
   
   # Variables to define from available information
   variables_to_define: 
