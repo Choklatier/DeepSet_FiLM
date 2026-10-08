@@ -354,7 +354,7 @@ def build_deepset_film(
     else:
         return Model(
             inputs=[tracks_in, mask_in, event_in],
-            outputs=[rho]
+            outputs=rho
         )
 
 
@@ -381,6 +381,22 @@ def build_decoder(
         inputs=decoder_in,
         outputs=x,
     )
+
+
+def build_set_decoder(
+    latent_dim,
+    n_items,
+    n_features,
+    hidden_dim=64,
+):
+    decoder_in = layers.Input(shape=(latent_dim,), name="set_decoder_input")
+
+    x = layers.Dense(hidden_dim, activation="relu")(decoder_in)
+    x = layers.Dense(n_items * hidden_dim, activation="relu")(x)
+    x = layers.Reshape((n_items, hidden_dim))(x)
+    outputs = layers.Dense(n_features, name="set_decoder_output")(x)
+
+    return Model(inputs=decoder_in, outputs=outputs)
 
 
     

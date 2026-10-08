@@ -263,10 +263,11 @@ class DataProcessor:
         """Build permutation-invariant feature vectors for nearby track pairs.
 
         A pair is selected when the Euclidean distance between its position
-        coordinates is at most ``radius``.         Each selected pair is represented by absolute feature differences
-        followed by feature sums, and the result is padded with zeros to
-        ``max_pairs`` per event. ``trk_phi`` uses a wrapped difference and
-        circular sine/cosine sum encoding.
+        coordinates is at most ``radius``. Each selected pair is represented
+        by feature sums followed by signed
+        differences. Pairs are ordered by descending track pT, with a
+        deterministic feature-based tie-break. ``trk_phi`` uses a wrapped
+        difference and circular sine/cosine sum encoding.
         """
         if radius < 0:
             raise ValueError("radius must be non-negative")
@@ -321,24 +322,62 @@ class DataProcessor:
         return trk_pairs_array, event_array, jets_array
 
     def _build_pair_features(self, tracks_1, tracks_2):
-        """Build swap-invariant pair features with circular encoding for phi."""
-        differences = np.abs(tracks_1 - tracks_2)
-        sums = tracks_1 + tracks_2
-        if "trk_phi" not in self.trk_columns:
-            return np.concatenate((differences, sums), axis=1)
+        """Build pT-canonical pair features with circular encoding for phi."""
+        if "trk_pt" not in self.trk_columns:
+            raise ValueError("trk_pt must be configured to build canonical track pairs")
 
-        phi_index = self.trk_columns.index("trk_phi")
-        phi_1 = tracks_1[:, phi_index]
-        phi_2 = tracks_2[:, phi_index]
+        pt_index = self.trk_columns.index("trk_pt")
+        swap = tracks_1[:, pt_index] < tracks_2[:, pt_index]
+        tied_pt = tracks_1[:, pt_index] == tracks_2[:, pt_index]
+        undecided = tied_pt.copy()
+        phi_index = (
+            self.trk_columns.index("trk_phi")
+            if "trk_phi" in self.trk_columns
+            else None
+        )
+        coordinate_indices = {
+            self.trk_columns.index(column)
+            for column in ("trk_x_pca", "trk_y_pca")
+            if column in self.trk_columns
+        }
+        for feature_index in range(tracks_1.shape[1]):
+            if (
+                feature_index == pt_index
+                or feature_index == phi_index
+                or (phi_index is not None and feature_index in coordinate_indices)
+            ):
+                continue
+            feature_tie_swap = undecided & (
+                tracks_1[:, feature_index] < tracks_2[:, feature_index]
+            )
+            swap |= feature_tie_swap
+            undecided &= tracks_1[:, feature_index] == tracks_2[:, feature_index]
+
+        if phi_index is not None:
+            phi_difference = np.arctan2(
+                np.sin(tracks_1[:, phi_index] - tracks_2[:, phi_index]),
+                np.cos(tracks_1[:, phi_index] - tracks_2[:, phi_index]),
+            )
+            swap |= undecided & (phi_difference < 0)
+
+        first = np.where(swap[:, np.newaxis], tracks_2, tracks_1)
+        second = np.where(swap[:, np.newaxis], tracks_1, tracks_2)
+        sums = first + second
+        differences = first - second
+        if "trk_phi" not in self.trk_columns:
+            return np.concatenate((sums, differences), axis=1)
+
+        phi_1 = first[:, phi_index]
+        phi_2 = second[:, phi_index]
         wrapped_difference = np.arctan2(
             np.sin(phi_1 - phi_2),
             np.cos(phi_1 - phi_2),
         )
-        differences[:, phi_index] = np.abs(wrapped_difference)
+        differences[:, phi_index] = wrapped_difference
         phi_sum = phi_1 + phi_2
         sums[:, phi_index] = np.cos(phi_sum)
         return np.concatenate(
-            (differences, sums, np.sin(phi_sum)[:, np.newaxis]),
+            (sums, differences, np.sin(phi_sum)[:, np.newaxis]),
             axis=1,
         )
 
@@ -353,9 +392,10 @@ class DataProcessor:
         """Build nearby track pairs independently within each jet.
 
         The pair result has shape ``(events, jets, pairs, pair_features)``.
-        It contains absolute feature differences followed by feature sums.
-        When ``trk_phi`` is configured, its difference is wrapped to the
-        circle, and its sum is encoded as cosine and sine components.
+        It contains feature sums followed by signed differences. Pairs are
+        ordered by descending track pT, with a deterministic tie-break. When
+        ``trk_phi`` is configured, its difference is wrapped to the circle,
+        and its sum is encoded as cosine and sine components.
         """
         if radius < 0:
             raise ValueError("radius must be non-negative")

@@ -6,10 +6,14 @@ import matplotlib.pyplot as plt
 
 from DataProcessor import DataProcessor
 from LLPMaker import LLPMaker
-from AutoEncoder import build_qkeras_deepset_film, build_deepset_film
+from AutoEncoder import (
+    build_qkeras_deepset_film,
+    build_deepset_film,
+    build_set_decoder,
+)
 
-from VICReg_utility import randomly_mask_track_instances
-from VICReg_utility import vicreg_loss
+from VICReg_utility import augment_track_pairs
+from VICReg_utility import chamfer_loss, vicreg_loss
 
 import yaml
 
@@ -27,14 +31,13 @@ SAVE_ARRAYS = config["Inputs"]["SAVE_ARRAYS"]
 ARRAYS_FILEPATH = config["Inputs"]["JET_MATCHED_ARRAYS_FILEPATH"]
 
 MAX_TRACKS = config["Architecture"]["MAX_TRACKS"]
-MAX_JETS = 6
-MAX_TRACK_PAIRS = 10
+MAX_JETS = 1
+MAX_TRACK_PAIRS = config["Architecture"]["MAX_TRACK_PAIRS"]
 PAIR_FEATURES = 2 * len(trk_columns) + ("trk_phi" in trk_columns)
 TRACK_PAIRS_RADIUS = 0.1
 PHI_DIM = config["Architecture"]["PHI_DIM"]
 ATTENTION_HIDDEN_DIM = config["Architecture"]["ATTENTION_HIDDEN_DIM"]
 RHO_DIM = config["Architecture"]["RHO_DIM"]
-LATENT_DIM = config["Architecture"]["LATENT_DIM"]
 N_HIDDEN_LAYERS = config["Architecture"]["N_HIDDEN_LAYERS"]
 
 MAX_EVENTS = config["Training"]["MAX_EVENTS"]
@@ -164,16 +167,23 @@ model = build_deepset_film(
     attention_hidden_dim=ATTENTION_HIDDEN_DIM,
     phi_dim= PHI_DIM,
     rho_dim= RHO_DIM,
-    latent_dim=LATENT_DIM,
     n_hidden_layers_tracks=N_HIDDEN_LAYERS,
     trk_shift=trk_shift,
     trk_scale=trk_scale,
     event_shift=event_shift,
     event_scale=event_scale,
-    vae_output=False, # No VAE output for VICReg method
+    vae_output=False,
 )
 
 print(model.summary())
+
+decoder = build_set_decoder(
+    latent_dim=RHO_DIM,
+    n_items=MAX_TRACK_PAIRS,
+    n_features=PAIR_FEATURES,
+)
+track_shift_tensor = tf.constant(trk_shift, dtype=tf.float32)
+track_scale_tensor = tf.constant(trk_scale, dtype=tf.float32)
 
 
 # optimizer = tf.keras.optimizers.Adam(learning_rate = LEARNING_RATE)
@@ -187,12 +197,15 @@ var_losses = []
 var_losses_std = []
 cov_losses = []
 cov_losses_std = []
+recon_losses = []
+recon_losses_std = []
 
 for epoch in range(N_EPOCHS):
     total_loss_per_epoch = []
     inv_loss_per_epoch = []
     var_loss_per_epoch = []
     cov_loss_per_epoch = []
+    recon_loss_per_epoch = []
     for step, (trk_batch, event_batch) in enumerate(train_dataset):
 
         # Build mask
@@ -201,14 +214,28 @@ for epoch in range(N_EPOCHS):
             tf.float32
         )[..., tf.newaxis]
 
-        trk_aug1, mask_aug1 = randomly_mask_track_instances(
-            trk_batch, mask_batch
+        trk_aug1, event_aug1, mask_aug1 = augment_track_pairs(
+            trk_batch,
+            event_batch,
+            mask_batch,
+            trk_columns,
+            event_columns,
+            jet_columns,
+            phi_rotation_max=np.pi,
+            eta_boost_max=0.0,
+            pair_mask_probability=0.0
         )
-        trk_aug2, mask_aug2 = randomly_mask_track_instances(
-            trk_batch, mask_batch
+        trk_aug2, event_aug2, mask_aug2 = augment_track_pairs(
+            trk_batch,
+            event_batch,
+            mask_batch,
+            trk_columns,
+            event_columns,
+            jet_columns,
+            phi_rotation_max=np.pi,
+            eta_boost_max=0.0,
+            pair_mask_probability=0.0
         )
-        event_aug1 = event_batch
-        event_aug2 = event_batch
 
 
         with tf.GradientTape() as tape:
@@ -235,17 +262,24 @@ for epoch in range(N_EPOCHS):
                 lambda_cov=LAMBDA_COV,
             )
 
+            pairs_reconstructed1 = decoder(rho1, training=True)
+            pairs_reconstructed2 = decoder(rho2, training=True)
+            pairs_target1 = (trk_aug1 - track_shift_tensor) / track_scale_tensor
+            pairs_target2 = (trk_aug2 - track_shift_tensor) / track_scale_tensor
+            recon_loss = 0.5 * (
+                chamfer_loss(pairs_target1, pairs_reconstructed1, mask_batch)
+                + chamfer_loss(pairs_target2, pairs_reconstructed2, mask_batch)
+            )
+            total_loss = loss_value + recon_loss
+
 
         gradients = tape.gradient(
-            loss_value,
-            model.trainable_weights
+            total_loss,
+            model.trainable_weights + decoder.trainable_weights,
         )
 
         optimizer.apply_gradients(
-            zip(
-                gradients,
-                model.trainable_weights
-            )
+            zip(gradients, model.trainable_weights + decoder.trainable_weights)
         )
 
         # Compute variance of rho1 for logging
@@ -253,25 +287,28 @@ for epoch in range(N_EPOCHS):
             tf.math.reduce_variance(rho1, axis=0)
         )
 
-        total_loss_per_epoch.append(loss_value.numpy())
+        total_loss_per_epoch.append(total_loss.numpy())
         inv_loss_per_epoch.append(sim_loss.numpy())
         var_loss_per_epoch.append(var_loss.numpy())
         cov_loss_per_epoch.append(cov_loss.numpy())
+        recon_loss_per_epoch.append(recon_loss.numpy())
         
         if step % 10 == 0:
             print(
                 f"epoch={epoch} "
                 f"step={step} "
-                f"Total loss={loss_value.numpy():.4f} "
+                f"Total loss={total_loss.numpy():.4f} "
                 f"Inv ={1000 * sim_loss.numpy():.4f} ", 
                 f"Var ={var_loss.numpy():.4f} ", 
                 f"Cov ={cov_loss.numpy():.4f} ",
+                f"Recon ={recon_loss.numpy():.4f} ",
                 f"std = {std.numpy()}",
             )
     
     inv_loss_per_epoch = LAMBDA_INV * np.array(inv_loss_per_epoch)
     var_loss_per_epoch = LAMBDA_VAR * np.array(var_loss_per_epoch)
     cov_loss_per_epoch = LAMBDA_COV * np.array(cov_loss_per_epoch)
+    recon_loss_per_epoch = np.array(recon_loss_per_epoch)
 
     total_losses.append(np.mean(total_loss_per_epoch))
     total_losses_std.append(np.std(total_loss_per_epoch))
@@ -281,6 +318,8 @@ for epoch in range(N_EPOCHS):
     var_losses_std.append(np.std(var_loss_per_epoch))
     cov_losses.append(np.mean(cov_loss_per_epoch))
     cov_losses_std.append(np.std(cov_loss_per_epoch))
+    recon_losses.append(np.mean(recon_loss_per_epoch))
+    recon_losses_std.append(np.std(recon_loss_per_epoch))
     print("Epoch summary:")
     print(
         f"epoch={epoch} "
@@ -288,6 +327,7 @@ for epoch in range(N_EPOCHS):
         f"Mean Inv Loss = {np.mean(inv_loss_per_epoch):.4f} "
         f"Mean Var Loss = {np.mean(var_loss_per_epoch):.4f} "
         f"Mean Cov Loss = {np.mean(cov_loss_per_epoch):.4f} "
+        f"Mean Recon Loss = {np.mean(recon_loss_per_epoch):.4f} "
         )
     print("")
 
@@ -315,6 +355,12 @@ plt.errorbar(
     cov_losses,
     yerr=cov_losses_std,
     label = "Covariance loss",
+    )
+plt.errorbar(
+    np.arange(0,len(total_losses_std),1),
+    recon_losses,
+    yerr=recon_losses_std,
+    label = "Reconstruction loss",
     )
 plt.xlabel("epochs")
 plt.ylabel("loss")
