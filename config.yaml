@@ -48,8 +48,8 @@ Architecture:
   MAX_TRACK_PAIRS: 16
   PHI_DIM: 256
   ATTENTION_HIDDEN_DIM: 16
-  RHO_DIM: 16
-  LATENT_DIM: 8
+  RHO_DIM: 32
+  LATENT_DIM: 16
   N_HIDDEN_LAYERS: 2
 
 # Training settings  
