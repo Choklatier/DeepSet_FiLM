@@ -9,6 +9,7 @@ plt.rcParams['text.usetex'] = True
 
 from DataProcessor import DataProcessor
 from LLPMaker import LLPMaker
+from LLPMaker import LIGHT_SPEED
 
 import onnx
 import onnxruntime as ort
@@ -51,11 +52,7 @@ def plot_gauss_smooth_contour(x,y, label = "", levels = 5, color = "black"):
         )
 
 # Computes the square of the mahalanobis distance for a vector z
-def mahalanobis2(z):
-    mu = np.mean(z,axis = 0)
-    Sigma = np.cov(z, rowvar=False)
-    Sigma_inv = np.linalg.pinv(Sigma)
-
+def mahalanobis2(z, mu,Sigma_inv):
     dz = z - mu
     return np.einsum("...i,ij,...j->...", dz, Sigma_inv, dz)
 
@@ -147,8 +144,8 @@ train_event_array = np.concatenate(
 # Inject LLP tracks independently for each valid jet-matched example.
 llp_maker = LLPMaker(val_trk_raw, val_jets_array, trk_columns)
 llp_trk_raw, llp_injected_tracks = llp_maker.sample_LLP_tracks(
-    mass=100,  # GeV
-    lifetime=1e-9,  # seconds
+    mass=0.75,  # GeV
+    lifetime= 10/LIGHT_SPEED, # mm # 1e-9,  # seconds
     alpha=2.0,
     beta=5.0,
     sig_0=0.1,
@@ -156,7 +153,9 @@ llp_trk_raw, llp_injected_tracks = llp_maker.sample_LLP_tracks(
     opposite_charge_fermions=True,
     different_fermion_flavors=False,
     debug_return=False,
-    min_lifetime=1e-9,
+    min_lifetime= None, #1e-9,
+    n_llps_mean=2.0,
+    n_llps_std=0.5,
 )
 
 # Match the direct-track trainer's per-track phi encoding and input masks.
@@ -171,22 +170,33 @@ train_mask = np.any(train_trk_array != 0, axis=-1, keepdims=True).astype(np.floa
 llp_mask = np.any(llp_trk_array != 0, axis=-1, keepdims=True).astype(np.float32)
 
 # Plot observables of the injected tracks
+llp_tracks_by_decay = llp_injected_tracks.reshape(
+    len(llp_injected_tracks),
+    -1,
+    2,
+    len(trk_columns),
+)
+valid_llp_decays = np.any(llp_tracks_by_decay != 0, axis=(-1, -2))
 for observable in trk_columns:
+    observable_idx = llp_maker.trk_columns.index(observable)
+    injected_track1 = llp_tracks_by_decay[:, :, 0, observable_idx][valid_llp_decays]
+    injected_track2 = llp_tracks_by_decay[:, :, 1, observable_idx][valid_llp_decays]
     plt.figure()
-    plt.hist(
-        llp_injected_tracks[:,0,llp_maker.trk_columns.index(observable)],
-        bins = 100,
-        histtype = "step",
-        label = f"Injected tracks 1",
-        density = True,
-        )
-    plt.hist(
-        llp_injected_tracks[:,1,llp_maker.trk_columns.index(observable)],
-        bins = 100,
-        histtype = "step",
-        label = f"Injected tracks 2",
-        density = True,
-        )
+    if injected_track1.size:
+        plt.hist(
+            injected_track1,
+            bins = 100,
+            histtype = "step",
+            label = "Injected tracks 1",
+            density = True,
+            )
+        plt.hist(
+            injected_track2,
+            bins = 100,
+            histtype = "step",
+            label = "Injected tracks 2",
+            density = True,
+            )
     plt.hist(val_trk_raw[:,0,llp_maker.trk_columns.index(observable)],
              bins = 100, 
              histtype = "step", 
@@ -363,12 +373,19 @@ for i in range(RHO_DIM):
 
 
 # Compute s(z) for both val and llp
-DM_val = mahalanobis2(val_rho)
-DM_llp = mahalanobis2(llp_rho)
-DM_val_sorted = np.sort(DM_val) 
+mu = np.mean(train_rho,axis = 0)
+Sigma = np.cov(train_rho, rowvar=False)
+Sigma_inv = np.linalg.pinv(Sigma)
 
-score_val = compute_score(DM_val, DM_val)
-score_llp = compute_score(DM_llp, DM_llp)
+DM_val = mahalanobis2(val_rho, mu, Sigma_inv)
+DM_llp = mahalanobis2(llp_rho, mu, Sigma_inv)
+
+# Use nominal validation distances as the common reference.
+DM_train = mahalanobis2(train_rho, mu, Sigma_inv)
+DM_train_sorted = np.sort(DM_train) 
+
+score_val = compute_score(DM_val, DM_train_sorted)
+score_llp = compute_score(DM_llp, DM_train_sorted)
 
 # Plot s(z) distributions
 plt.figure()
@@ -377,13 +394,22 @@ plt.hist(score_llp, bins = 30 , histtype="step",label = "llp-injected")
 plt.savefig("plots/latent_space_study/score_distributions.pdf")
 
 # AUC of s(z)
-y_pred = np.concatenate([score_llp,score_val],axis = 0)
-y_true = np.concatenate([np.ones(score_llp.shape),np.zeros(score_val.shape)],axis = 0)
-fpr, tpr, thresholds = roc_curve(y_true, y_pred)
+y_true = np.concatenate(
+    [np.ones(score_llp.shape), np.zeros(score_val.shape)], axis=0
+)
+y_pred = np.concatenate([score_llp, score_val], axis=0)
+fpr, tpr, _ = roc_curve(y_true, y_pred)
+auc = roc_auc_score(y_true, y_pred)
 plt.figure()
-plt.title(f"AUC = {roc_auc_score(y_true, y_pred)}")
-plt.plot(fpr, tpr)
+plt.title("ROC curves")
+plt.plot(fpr, tpr, label=fr"$s(z)$ (AUC = {auc:.3f})")
+for i in range(RHO_DIM):
+    rho_pred = np.concatenate([llp_rho[:, i], val_rho[:, i]], axis=0)
+    fpr, tpr, _ = roc_curve(y_true, rho_pred)
+    auc = roc_auc_score(y_true, rho_pred)
+    plt.plot(fpr, tpr, label=fr"$\rho_{{{i}}}$ (AUC = {auc:.3f})")
 plt.plot([0,1],[0,1],ls = "--",color = "grey")
 plt.xlabel('False Positive Rate')
 plt.ylabel('True Positive Rate') 
+plt.legend()
 plt.savefig("plots/latent_space_study/score_ROC.pdf")
