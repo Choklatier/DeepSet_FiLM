@@ -1,0 +1,396 @@
+import ROOT
+import tensorflow as tf
+import hls4ml
+import numpy as np
+import matplotlib.pyplot as plt
+
+from DataProcessor import DataProcessor
+from LLPMaker import LLPMaker
+from AutoEncoder import (
+    build_qkeras_deepset_film,
+    build_deepset_film,
+    build_set_decoder,
+)
+
+from VICReg_utility import augment_track_pairs
+from VICReg_utility import chamfer_loss, vicreg_loss
+
+import yaml
+
+with open("config.yaml","r") as config_file:
+    config = yaml.safe_load(config_file)
+
+# Read input information from yaml config
+variables_to_define = config["Inputs"]["variables_to_define"]
+trk_columns = config["Inputs"]["trk_columns"]
+event_columns = config["Inputs"]["event_columns"]
+jet_columns = config["Inputs"]["jet_columns"]
+
+LOAD_ARRAYS = config["Inputs"]["LOAD_ARRAYS"]
+SAVE_ARRAYS = config["Inputs"]["SAVE_ARRAYS"]
+ARRAYS_FILEPATH = config["Inputs"]["JET_MATCHED_ARRAYS_FILEPATH"]
+
+MAX_TRACKS = config["Architecture"]["MAX_TRACKS"]
+MAX_JETS = 1
+MAX_TRACK_PAIRS = config["Architecture"]["MAX_TRACK_PAIRS"]
+PAIR_FEATURES = 2 * len(trk_columns) + ("trk_phi" in trk_columns)
+TRACK_PAIRS_RADIUS = 0.1
+PHI_DIM = config["Architecture"]["PHI_DIM"]
+ATTENTION_HIDDEN_DIM = config["Architecture"]["ATTENTION_HIDDEN_DIM"]
+RHO_DIM = config["Architecture"]["RHO_DIM"]
+N_HIDDEN_LAYERS = config["Architecture"]["N_HIDDEN_LAYERS"]
+
+MAX_EVENTS = config["Training"]["MAX_EVENTS"]
+BATCH_SIZE = config["Training"]["BATCH_SIZE"]
+N_EPOCHS   = config["Training"]["N_EPOCHS"]
+K_FOLDS   = config["Training"]["K_FOLDS"]
+LAMBDA_INV = config["Training"]["LAMBDA_INV"]
+LAMBDA_VAR = config["Training"]["LAMBDA_VAR"]
+LAMBDA_COV = config["Training"]["LAMBDA_COV"]
+LEARNING_RATE = config["Training"]["LEARNING_RATE"]
+
+
+def flatten_jet_examples(tracks, events, jets):
+    """Flatten real event-jet entries into independent model examples."""
+    jet_events = np.repeat(events[:, np.newaxis, :], jets.shape[1], axis=1)
+    jet_context = np.concatenate((jet_events, jets), axis=-1)
+    valid_jets = np.any(jets != 0, axis=-1)
+    return tracks[valid_jets], jet_context[valid_jets]
+
+
+def linear_stats(values, axes, valid_mask=None):
+    if valid_mask is not None:
+        values = values[valid_mask]
+        axes = 0
+    if values.size == 0:
+        raise ValueError("Cannot compute normalization statistics without physical entries")
+    minimum = np.min(values, axis=axes)
+    maximum = np.max(values, axis=axes)
+    return (minimum + maximum) / 2, (maximum - minimum) / 2
+
+
+# Force eager execution for debugging
+# This makes tensors concrete and allows .numpy() and simple prints inside the model.
+# if hasattr(tf, "config") and tf.config.experimental_run_functions_eagerly:
+#     tf.config.experimental_run_functions_eagerly(True)
+
+# # For TensorFlow 2.x, eager execution is already enabled by default.
+# # If you are on an older installation, this fallback is kept for compatibility.
+# try:
+#     tf.compat.v1.enable_eager_execution()
+# except Exception:
+#     pass
+
+# Read data
+print("Reading data...")
+root_file = ROOT.TFile.Open("Multijet_2010B.root")
+tree = root_file.Get("analyzer/Events")
+print("Processing data...")
+DP = DataProcessor(
+    tree,
+    trk_columns,
+    event_columns,
+    variables_to_define = variables_to_define,
+    jets_columns= jet_columns,
+    max_events = MAX_EVENTS,
+    max_tracks = MAX_TRACKS,
+    filepath=ARRAYS_FILEPATH if LOAD_ARRAYS else None
+    )
+
+print("Dividing data into folds...")
+folds = DP.get_jet_matched_kfold_dataset(
+    kfolds=K_FOLDS,
+    max_jets=MAX_JETS,
+    max_pairs=MAX_TRACK_PAIRS,
+    radius=TRACK_PAIRS_RADIUS,
+    cut="1",
+)
+
+# Save arrays if asked
+if SAVE_ARRAYS:
+    DP.save_jet_matched_arrays(ARRAYS_FILEPATH)
+
+print("Computing linear transformation parameters...")
+fold_examples = [
+    flatten_jet_examples(fold[3], fold[1], fold[2])
+    for fold in folds
+]
+all_track_pair_examples = np.concatenate(
+    [examples[0] for examples in fold_examples],
+    axis=0,
+)
+all_jet_context = np.concatenate(
+    [examples[1] for examples in fold_examples],
+    axis=0,
+)
+valid_track_pairs = np.any(all_track_pair_examples != 0, axis=-1)
+trk_shift, trk_scale = linear_stats(
+    all_track_pair_examples,
+    axes=(0, 1),
+    valid_mask=valid_track_pairs,
+)
+event_shift, event_scale = linear_stats(all_jet_context, axes=0)
+print(trk_shift, trk_scale, event_shift, event_scale)
+print("Transf:", 1/trk_scale, -trk_shift/trk_scale, 1/event_scale, -event_shift/event_scale)
+
+val_trk_array, val_event_array = fold_examples[0]
+train_trk_array = np.concatenate(
+    [examples[0] for examples in fold_examples[1:]],
+    axis=0,
+)
+train_event_array = np.concatenate(
+    [examples[1] for examples in fold_examples[1:]],
+    axis=0,
+)
+
+# Convert to float32 (float vs double conflicts)
+train_trk_array = train_trk_array.astype(np.float32, copy=False)
+train_event_array = train_event_array.astype(np.float32, copy=False)
+print("Splitting data into batches...")
+# Split into batches
+train_dataset = (
+    tf.data.Dataset.from_tensor_slices((train_trk_array, train_event_array))
+    .shuffle(len(train_trk_array), reshuffle_each_iteration=True)
+    .batch(batch_size = BATCH_SIZE)
+    )
+print("Shape of train_trk_array: ", train_trk_array.shape)
+print("Shape of train_event_array: ", train_event_array.shape)
+print("Number of batches:",len(train_dataset))
+
+print("Building the models...")
+# build model
+# model = build_qkeras_deepset_film(
+model = build_deepset_film(
+    n_tracks_max=MAX_TRACK_PAIRS,
+    n_track_features=PAIR_FEATURES,
+    n_event_features=len(event_columns) + len(jet_columns),
+    attention_hidden_dim=ATTENTION_HIDDEN_DIM,
+    phi_dim= PHI_DIM,
+    rho_dim= RHO_DIM,
+    n_hidden_layers_tracks=N_HIDDEN_LAYERS,
+    trk_shift=trk_shift,
+    trk_scale=trk_scale,
+    event_shift=event_shift,
+    event_scale=event_scale,
+    vae_output=False,
+)
+
+print(model.summary())
+
+decoder = build_set_decoder(
+    latent_dim=RHO_DIM,
+    n_items=MAX_TRACK_PAIRS,
+    n_features=PAIR_FEATURES,
+)
+track_shift_tensor = tf.constant(trk_shift, dtype=tf.float32)
+track_scale_tensor = tf.constant(trk_scale, dtype=tf.float32)
+
+
+# optimizer = tf.keras.optimizers.Adam(learning_rate = LEARNING_RATE)
+optimizer = tf.keras.optimizers.legacy.Adam(learning_rate = LEARNING_RATE) # Faster for M1/M2 Macs
+
+total_losses = []
+total_losses_std = []
+inv_losses = []
+inv_losses_std = []
+var_losses = []
+var_losses_std = []
+cov_losses = []
+cov_losses_std = []
+recon_losses = []
+recon_losses_std = []
+
+for epoch in range(N_EPOCHS):
+    total_loss_per_epoch = []
+    inv_loss_per_epoch = []
+    var_loss_per_epoch = []
+    cov_loss_per_epoch = []
+    recon_loss_per_epoch = []
+    for step, (trk_batch, event_batch) in enumerate(train_dataset):
+
+        # Build mask
+        mask_batch = tf.cast(
+            tf.reduce_any(trk_batch != 0.0, axis=-1),
+            tf.float32
+        )[..., tf.newaxis]
+
+        trk_aug1, event_aug1, mask_aug1 = augment_track_pairs(
+            trk_batch,
+            event_batch,
+            mask_batch,
+            trk_columns,
+            event_columns,
+            jet_columns,
+            phi_rotation_max=np.pi,
+            eta_boost_max=0.0,
+            pair_mask_probability=0.0
+        )
+        trk_aug2, event_aug2, mask_aug2 = augment_track_pairs(
+            trk_batch,
+            event_batch,
+            mask_batch,
+            trk_columns,
+            event_columns,
+            jet_columns,
+            phi_rotation_max=np.pi,
+            eta_boost_max=0.0,
+            pair_mask_probability=0.0
+        )
+
+
+        with tf.GradientTape() as tape:
+
+            rho1 = model(
+                [trk_aug1,
+                 mask_aug1,
+                 event_aug1],
+                training=True
+            )
+
+            rho2 = model(
+                [trk_aug2,
+                 mask_aug2,
+                 event_aug2],
+                training=True
+            )
+
+            loss_value, sim_loss, var_loss, cov_loss = vicreg_loss(
+                rho1,
+                rho2,
+                lambda_inv=LAMBDA_INV,
+                lambda_var=LAMBDA_VAR,
+                lambda_cov=LAMBDA_COV,
+            )
+
+            pairs_reconstructed1 = decoder(rho1, training=True)
+            pairs_reconstructed2 = decoder(rho2, training=True)
+            pairs_target1 = (trk_aug1 - track_shift_tensor) / track_scale_tensor
+            pairs_target2 = (trk_aug2 - track_shift_tensor) / track_scale_tensor
+            recon_loss = 0.5 * (
+                chamfer_loss(pairs_target1, pairs_reconstructed1, mask_batch)
+                + chamfer_loss(pairs_target2, pairs_reconstructed2, mask_batch)
+            )
+            total_loss = loss_value + recon_loss
+
+
+        gradients = tape.gradient(
+            total_loss,
+            model.trainable_weights + decoder.trainable_weights,
+        )
+
+        optimizer.apply_gradients(
+            zip(gradients, model.trainable_weights + decoder.trainable_weights)
+        )
+
+        # Compute variance of rho1 for logging
+        std = tf.sqrt(
+            tf.math.reduce_variance(rho1, axis=0)
+        )
+
+        total_loss_per_epoch.append(total_loss.numpy())
+        inv_loss_per_epoch.append(sim_loss.numpy())
+        var_loss_per_epoch.append(var_loss.numpy())
+        cov_loss_per_epoch.append(cov_loss.numpy())
+        recon_loss_per_epoch.append(recon_loss.numpy())
+        
+        if step % 10 == 0:
+            print(
+                f"epoch={epoch} "
+                f"step={step} "
+                f"Total loss={total_loss.numpy():.4f} "
+                f"Inv ={1000 * sim_loss.numpy():.4f} ", 
+                f"Var ={var_loss.numpy():.4f} ", 
+                f"Cov ={cov_loss.numpy():.4f} ",
+                f"Recon ={recon_loss.numpy():.4f} ",
+                f"std = {std.numpy()}",
+            )
+    
+    inv_loss_per_epoch = LAMBDA_INV * np.array(inv_loss_per_epoch)
+    var_loss_per_epoch = LAMBDA_VAR * np.array(var_loss_per_epoch)
+    cov_loss_per_epoch = LAMBDA_COV * np.array(cov_loss_per_epoch)
+    recon_loss_per_epoch = np.array(recon_loss_per_epoch)
+
+    total_losses.append(np.mean(total_loss_per_epoch))
+    total_losses_std.append(np.std(total_loss_per_epoch))
+    inv_losses.append(np.mean(inv_loss_per_epoch))
+    inv_losses_std.append(np.std(inv_loss_per_epoch))
+    var_losses.append(np.mean(var_loss_per_epoch))
+    var_losses_std.append(np.std(var_loss_per_epoch))
+    cov_losses.append(np.mean(cov_loss_per_epoch))
+    cov_losses_std.append(np.std(cov_loss_per_epoch))
+    recon_losses.append(np.mean(recon_loss_per_epoch))
+    recon_losses_std.append(np.std(recon_loss_per_epoch))
+    print("Epoch summary:")
+    print(
+        f"epoch={epoch} "
+        f"Mean Total Loss = {np.mean(total_loss_per_epoch):.4f} "
+        f"Mean Inv Loss = {np.mean(inv_loss_per_epoch):.4f} "
+        f"Mean Var Loss = {np.mean(var_loss_per_epoch):.4f} "
+        f"Mean Cov Loss = {np.mean(cov_loss_per_epoch):.4f} "
+        f"Mean Recon Loss = {np.mean(recon_loss_per_epoch):.4f} "
+        )
+    print("")
+
+plt.figure()
+plt.errorbar(
+    np.arange(0,len(total_losses_std),1),
+    total_losses,
+    yerr=total_losses_std,
+    label = "Total loss",
+    )
+plt.errorbar(
+    np.arange(0,len(total_losses_std),1),
+    inv_losses,
+    yerr=inv_losses_std,
+    label = "Invariance loss",
+    )
+plt.errorbar(
+    np.arange(0,len(total_losses_std),1),
+    var_losses,
+    yerr=var_losses_std,
+    label = "Variance loss",
+    )
+plt.errorbar(
+    np.arange(0,len(total_losses_std),1),
+    cov_losses,
+    yerr=cov_losses_std,
+    label = "Covariance loss",
+    )
+plt.errorbar(
+    np.arange(0,len(total_losses_std),1),
+    recon_losses,
+    yerr=recon_losses_std,
+    label = "Reconstruction loss",
+    )
+plt.xlabel("epochs")
+plt.ylabel("loss")
+plt.legend()
+plt.savefig("loss.pdf")
+
+# Convert model and save to ONNX format
+import tf2onnx
+
+spec = (
+    tf.TensorSpec(
+        (None, MAX_TRACK_PAIRS, PAIR_FEATURES),
+        tf.float32,
+        name="track_pairs",
+    ),
+    tf.TensorSpec(
+        (None, MAX_TRACK_PAIRS, 1),
+        tf.float32,
+        name="mask",
+    ),
+    tf.TensorSpec(
+        (None, len(event_columns) + len(jet_columns)),
+        tf.float32,
+        name="event",
+    ),
+)
+
+model_proto, _ = tf2onnx.convert.from_keras(
+    model,
+    input_signature=spec,
+    opset=17,          # select operation set from ONNX
+    output_path="deepset_film.onnx",
+)

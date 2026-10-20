@@ -1,16 +1,19 @@
 import ROOT
 import tensorflow as tf
-from tensorflow.keras import Model, layers
 import hls4ml
 import numpy as np
 import matplotlib.pyplot as plt
 
 from DataProcessor import DataProcessor
 from LLPMaker import LLPMaker
-from AutoEncoder import build_qkeras_deepset_film, build_deepset_film
+from AutoEncoder import (
+    build_qkeras_deepset_film,
+    build_deepset_film,
+    build_set_decoder,
+)
 
 from VICReg_utility import augment_tracks
-from VICReg_utility import vicreg_loss
+from VICReg_utility import chamfer_loss, vicreg_loss
 
 import yaml
 
@@ -25,13 +28,13 @@ jet_columns = config["Inputs"]["jet_columns"]
 
 LOAD_ARRAYS = config["Inputs"]["LOAD_ARRAYS"]
 SAVE_ARRAYS = config["Inputs"]["SAVE_ARRAYS"]
-ARRAYS_FILEPATH = config["Inputs"]["ARRAYS_FILEPATH"]
+ARRAYS_FILEPATH = config["Inputs"]["JET_MATCHED_ARRAYS_FILEPATH"]
 
 MAX_TRACKS = config["Architecture"]["MAX_TRACKS"]
+MAX_JETS = 1
 PHI_DIM = config["Architecture"]["PHI_DIM"]
 ATTENTION_HIDDEN_DIM = config["Architecture"]["ATTENTION_HIDDEN_DIM"]
 RHO_DIM = config["Architecture"]["RHO_DIM"]
-LATENT_DIM = config["Architecture"]["LATENT_DIM"]
 N_HIDDEN_LAYERS = config["Architecture"]["N_HIDDEN_LAYERS"]
 
 MAX_EVENTS = config["Training"]["MAX_EVENTS"]
@@ -42,6 +45,41 @@ LAMBDA_INV = config["Training"]["LAMBDA_INV"]
 LAMBDA_VAR = config["Training"]["LAMBDA_VAR"]
 LAMBDA_COV = config["Training"]["LAMBDA_COV"]
 LEARNING_RATE = config["Training"]["LEARNING_RATE"]
+
+
+def flatten_jet_examples(tracks, events, jets):
+    """Flatten real event-jet entries into independent model examples."""
+    jet_events = np.repeat(events[:, np.newaxis, :], jets.shape[1], axis=1)
+    jet_context = np.concatenate((jet_events, jets), axis=-1)
+    valid_jets = np.any(jets != 0, axis=-1)
+    tracks = tracks[valid_jets]
+    if "trk_phi" in trk_columns:
+        phi_index = trk_columns.index("trk_phi")
+        valid_tracks = np.any(tracks != 0, axis=-1)
+        phi = tracks[..., phi_index]
+        tracks = np.concatenate(
+            (
+                tracks[..., :phi_index],
+                np.sin(phi)[..., np.newaxis],
+                np.cos(phi)[..., np.newaxis],
+                tracks[..., phi_index + 1:],
+            ),
+            axis=-1,
+        )
+        tracks = np.where(valid_tracks[..., np.newaxis], tracks, 0)
+    return tracks, jet_context[valid_jets]
+
+
+def linear_stats(values, axes, valid_mask=None):
+    if valid_mask is not None:
+        values = values[valid_mask]
+        axes = 0
+    if values.size == 0:
+        raise ValueError("Cannot compute normalization statistics without physical entries")
+    minimum = np.min(values, axis=axes)
+    maximum = np.max(values, axis=axes)
+    return (minimum + maximum) / 2, (maximum - minimum) / 2
+
 
 # Force eager execution for debugging
 # This makes tensors concrete and allows .numpy() and simple prints inside the model.
@@ -68,31 +106,53 @@ DP = DataProcessor(
     jets_columns= jet_columns,
     max_events = MAX_EVENTS,
     max_tracks = MAX_TRACKS,
-    filepath= ARRAYS_FILEPATH if LOAD_ARRAYS else None # Only indicate filepath if loading
+    filepath=ARRAYS_FILEPATH if LOAD_ARRAYS else None
     )
 
 print("Dividing data into folds...")
-folds = DP.get_kfold_dataset(kfolds = K_FOLDS, cut = "1")
+folds = DP.get_jet_matched_kfold_dataset(
+    kfolds=K_FOLDS,
+    cut="1",
+    max_jets=MAX_JETS,
+    max_pairs=None,
+)
 
 # Save arrays if asked
 if SAVE_ARRAYS:
-    DP.save_arrays(ARRAYS_FILEPATH)
+    DP.save_jet_matched_arrays(ARRAYS_FILEPATH)
 
 print("Computing linear transformation parameters...")
-trk_shift, trk_scale, event_shift, event_scale = DP.get_lin_transform()
+all_jet_context = np.concatenate(
+    [flatten_jet_examples(fold[0], fold[1], fold[2])[1] for fold in folds],
+    axis=0,
+)
+event_shift, event_scale = linear_stats(all_jet_context, axes=0)
+fold_examples = [
+    flatten_jet_examples(fold[0], fold[1], fold[2])
+    for fold in folds
+]
+all_track_examples = np.concatenate(
+    [examples[0] for examples in fold_examples],
+    axis=0,
+)
+valid_tracks = np.any(all_track_examples != 0, axis=-1)
+trk_shift, trk_scale = linear_stats(
+    all_track_examples,
+    axes=(0, 1),
+    valid_mask=valid_tracks,
+)
 print(trk_shift, trk_scale, event_shift, event_scale)
 print("Transf:", 1/trk_scale, -trk_shift/trk_scale, 1/event_scale, -event_shift/event_scale)
 
-# Organise folds
-# TODO : train multiple models using all folds
-val_trk_array,val_event_array, _ = folds[0]
-train_trk_array = []
-train_event_array = []
-for i in range(1,len(folds)):
-    train_trk_array.append(folds[i][0])
-    train_event_array.append(folds[i][1])
-train_trk_array = np.concatenate(train_trk_array, axis = 0)
-train_event_array = np.concatenate(train_event_array, axis = 0)
+val_trk_array, val_event_array = fold_examples[0]
+train_trk_array = np.concatenate(
+    [examples[0] for examples in fold_examples[1:]],
+    axis=0,
+)
+train_event_array = np.concatenate(
+    [examples[1] for examples in fold_examples[1:]],
+    axis=0,
+)
 
 # Convert to float32 (float vs double conflicts)
 train_trk_array = train_trk_array.astype(np.float32, copy=False)
@@ -111,21 +171,28 @@ print("Building the models...")
 # model = build_qkeras_deepset_film(
 model = build_deepset_film(
     n_tracks_max=MAX_TRACKS,
-    n_track_features=len(trk_columns),
-    n_event_features=len(event_columns),
+    n_track_features=len(trk_columns) + ("trk_phi" in trk_columns),
+    n_event_features=len(event_columns) + len(jet_columns),
     attention_hidden_dim=ATTENTION_HIDDEN_DIM,
     phi_dim= PHI_DIM,
     rho_dim= RHO_DIM,
-    latent_dim=LATENT_DIM,
     n_hidden_layers_tracks=N_HIDDEN_LAYERS,
     trk_shift=trk_shift,
     trk_scale=trk_scale,
     event_shift=event_shift,
     event_scale=event_scale,
-    vae_output=False, # No VAE output for VICReg method
+    vae_output=False,
 )
 
 print(model.summary())
+
+decoder = build_set_decoder(
+    latent_dim=RHO_DIM,
+    n_items=MAX_TRACKS,
+    n_features=len(trk_columns) + ("trk_phi" in trk_columns),
+)
+track_shift_tensor = tf.constant(trk_shift, dtype=tf.float32)
+track_scale_tensor = tf.constant(trk_scale, dtype=tf.float32)
 
 
 # optimizer = tf.keras.optimizers.Adam(learning_rate = LEARNING_RATE)
@@ -139,53 +206,40 @@ var_losses = []
 var_losses_std = []
 cov_losses = []
 cov_losses_std = []
+recon_losses = []
+recon_losses_std = []
 
 for epoch in range(N_EPOCHS):
     total_loss_per_epoch = []
     inv_loss_per_epoch = []
     var_loss_per_epoch = []
     cov_loss_per_epoch = []
+    recon_loss_per_epoch = []
     for step, (trk_batch, event_batch) in enumerate(train_dataset):
 
-        # Build mask
-        valid_tracks = tf.cast(
-            tf.minimum(
-                tf.cast(event_batch[:, 2], tf.int32),
-                MAX_TRACKS
-            ),
-            tf.int32,
-        )
-
-        mask_batch = tf.sequence_mask(
-            valid_tracks,
-            maxlen=MAX_TRACKS,
-            dtype=tf.float32
-        )
-
-        mask_batch = tf.expand_dims(
-            mask_batch,
-            axis=-1
-        )
-
-        # Create second two views
+        mask_batch = tf.cast(
+            tf.reduce_any(trk_batch != 0.0, axis=-1),
+            tf.float32,
+        )[..., tf.newaxis]
         trk_aug1, event_aug1, mask_aug1 = augment_tracks(
             trk_batch,
             event_batch,
             mask_batch,
             trk_columns,
             event_columns,
-            boost_max= 0.1,
-            track_mask_prob= None,
+            boost_max=0.0,
+            track_mask_prob=0.0,
+            jet_columns=jet_columns,
         )
-
         trk_aug2, event_aug2, mask_aug2 = augment_tracks(
             trk_batch,
             event_batch,
             mask_batch,
             trk_columns,
             event_columns,
-            boost_max= 0.1,
-            track_mask_prob= None,
+            boost_max=0.0,
+            track_mask_prob=0.0,
+            jet_columns=jet_columns,
         )
 
 
@@ -213,17 +267,28 @@ for epoch in range(N_EPOCHS):
                 lambda_cov=LAMBDA_COV,
             )
 
+            tracks_reconstructed1 = decoder(rho1, training=True)
+            tracks_reconstructed2 = decoder(rho2, training=True)
+            tracks_target1 = (
+                trk_aug1 - track_shift_tensor
+            ) / track_scale_tensor
+            tracks_target2 = (
+                trk_aug2 - track_shift_tensor
+            ) / track_scale_tensor
+            recon_loss = 0.5 * (
+                chamfer_loss(tracks_target1, tracks_reconstructed1, mask_batch)
+                + chamfer_loss(tracks_target2, tracks_reconstructed2, mask_batch)
+            )
+            total_loss = loss_value + recon_loss
+
 
         gradients = tape.gradient(
-            loss_value,
-            model.trainable_weights
+            total_loss,
+            model.trainable_weights + decoder.trainable_weights,
         )
 
         optimizer.apply_gradients(
-            zip(
-                gradients,
-                model.trainable_weights
-            )
+            zip(gradients, model.trainable_weights + decoder.trainable_weights)
         )
 
         # Compute variance of rho1 for logging
@@ -231,25 +296,28 @@ for epoch in range(N_EPOCHS):
             tf.math.reduce_variance(rho1, axis=0)
         )
 
-        total_loss_per_epoch.append(loss_value.numpy())
+        total_loss_per_epoch.append(total_loss.numpy())
         inv_loss_per_epoch.append(sim_loss.numpy())
         var_loss_per_epoch.append(var_loss.numpy())
         cov_loss_per_epoch.append(cov_loss.numpy())
+        recon_loss_per_epoch.append(recon_loss.numpy())
         
         if step % 10 == 0:
             print(
                 f"epoch={epoch} "
                 f"step={step} "
-                f"Total loss={loss_value.numpy():.4f} "
+                f"Total loss={total_loss.numpy():.4f} "
                 f"Inv ={1000 * sim_loss.numpy():.4f} ", 
                 f"Var ={var_loss.numpy():.4f} ", 
                 f"Cov ={cov_loss.numpy():.4f} ",
+                f"Recon ={recon_loss.numpy():.4f} ",
                 f"std = {std.numpy()}",
             )
     
     inv_loss_per_epoch = LAMBDA_INV * np.array(inv_loss_per_epoch)
     var_loss_per_epoch = LAMBDA_VAR * np.array(var_loss_per_epoch)
     cov_loss_per_epoch = LAMBDA_COV * np.array(cov_loss_per_epoch)
+    recon_loss_per_epoch = np.array(recon_loss_per_epoch)
 
     total_losses.append(np.mean(total_loss_per_epoch))
     total_losses_std.append(np.std(total_loss_per_epoch))
@@ -259,6 +327,8 @@ for epoch in range(N_EPOCHS):
     var_losses_std.append(np.std(var_loss_per_epoch))
     cov_losses.append(np.mean(cov_loss_per_epoch))
     cov_losses_std.append(np.std(cov_loss_per_epoch))
+    recon_losses.append(np.mean(recon_loss_per_epoch))
+    recon_losses_std.append(np.std(recon_loss_per_epoch))
     print("Epoch summary:")
     print(
         f"epoch={epoch} "
@@ -266,6 +336,7 @@ for epoch in range(N_EPOCHS):
         f"Mean Inv Loss = {np.mean(inv_loss_per_epoch):.4f} "
         f"Mean Var Loss = {np.mean(var_loss_per_epoch):.4f} "
         f"Mean Cov Loss = {np.mean(cov_loss_per_epoch):.4f} "
+        f"Mean Recon Loss = {np.mean(recon_loss_per_epoch):.4f} "
         )
     print("")
 
@@ -275,6 +346,7 @@ plt.errorbar(
     total_losses,
     yerr=total_losses_std,
     label = "Total loss",
+    fmt= "o",
     )
 plt.errorbar(
     np.arange(0,len(total_losses_std),1),
@@ -294,6 +366,12 @@ plt.errorbar(
     yerr=cov_losses_std,
     label = "Covariance loss",
     )
+plt.errorbar(
+    np.arange(0,len(total_losses_std),1),
+    recon_losses,
+    yerr=recon_losses_std,
+    label = "Reconstruction loss",
+    )
 plt.xlabel("epochs")
 plt.ylabel("loss")
 plt.legend()
@@ -304,7 +382,7 @@ import tf2onnx
 
 spec = (
     tf.TensorSpec(
-        (None, MAX_TRACKS, len(trk_columns)),
+        (None, MAX_TRACKS, len(trk_columns) + ("trk_phi" in trk_columns)),
         tf.float32,
         name="tracks",
     ),
@@ -314,7 +392,7 @@ spec = (
         name="mask",
     ),
     tf.TensorSpec(
-        (None, len(event_columns)),
+        (None, len(event_columns) + len(jet_columns)),
         tf.float32,
         name="event",
     ),

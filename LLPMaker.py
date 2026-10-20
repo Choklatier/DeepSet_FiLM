@@ -2,6 +2,60 @@ import numpy as np
 
 LIGHT_SPEED = 299792458*1e3 # mm/s
 
+
+def _track_impact_parameters(vertex, momentum):
+    """Calculate signed d0 and z0 for straight tracks from the origin."""
+    px, py, pz = momentum.T
+    pt = np.hypot(px, py)
+    phi = np.arctan2(py, px)
+    x_vertex, y_vertex, z_vertex = vertex.T
+    d0 = -x_vertex * np.sin(phi) + y_vertex * np.cos(phi)
+    transverse_path_to_pca = -(
+        x_vertex * np.cos(phi) + y_vertex * np.sin(phi)
+    )
+    z0 = z_vertex + np.divide(
+        transverse_path_to_pca * pz,
+        pt,
+        out=np.zeros_like(transverse_path_to_pca),
+        where=pt > 0,
+    )
+    return d0, z0, phi, pt
+
+
+def impact_parameter_resolution(pt, a, b):
+    """Return fitted resolution in micrometres; pt is in GeV."""
+    pt = np.asarray(pt, dtype=float)
+
+    if np.any(~np.isfinite(pt)) or np.any(pt <= 0):
+        raise ValueError("All track pT values must be finite and positive.")
+
+    return np.sqrt(a**2 + (b / pt)**2)
+
+def truncated_gaussian_smearing(rng, sigma, n_sigma=5.0):
+    """
+    Sample zero-mean Gaussian smearing with per-track sigma,
+    rejecting residuals outside ±n_sigma*sigma.
+
+    sigma can be a scalar or an array.
+    """
+    sigma = np.asarray(sigma, dtype=float)
+
+    if np.any(~np.isfinite(sigma)) or np.any(sigma < 0):
+        raise ValueError("Sigma must be finite and non-negative.")
+
+    delta = rng.normal(loc=0.0, scale=sigma)
+    mask = np.abs(delta) > n_sigma * sigma
+
+    while np.any(mask):
+        delta[mask] = rng.normal(
+            loc=0.0,
+            scale=sigma[mask],
+        )
+        mask = np.abs(delta) > n_sigma * sigma
+
+    return delta
+
+
 # LLPMaker produce fake tracks associated with a neutral particle decaying to fermions and associated with a jet.
 # Assume jets_array := [pt,eta,phi,e]
 class LLPMaker:
@@ -15,6 +69,7 @@ class LLPMaker:
         self.trk_array = trk_array
         self.jets_array = jets_array
         self.trk_columns = trk_columns
+        self.rng = np.random.default_rng()
 
 
     def sample_LLP_tracks_loop(
@@ -117,15 +172,48 @@ class LLPMaker:
         opposite_charge_fermions : bool = True,
         different_fermion_flavors : bool = False,
         debug_return : bool = False,
-        min_lifetime : float = None
+        min_lifetime : float = None,
+        n_llps_mean : float = 1.0,
+        n_llps_std : float = 0.0,
+        d0_smearing_sigma : float = 0.001,
+        z0_smearing_sigma : float = 0.005,
         ):
         """
-        Sample a resonance with a given mass and lifetime, and produce two tracks associated with it.
+        Sample LLPs per event and inject their two decay tracks into each event.
+
+        The number of LLPs per event is sampled from a Gaussian, rounded to the
+        nearest integer, and clipped to zero or above. Injected tracks are
+        returned in an event-padded array, with two tracks per sampled LLP.
+        The true decay vertex is not smeared. Daughter d0 and z0 are calculated
+        from the true vertex and each track's momentum, then independently
+        smeared using sigmas in the generated vertex's length units (mm with
+        the current LIGHT_SPEED constant).
+        Tracks with non-finite eta or |eta| > 2.5 are zeroed in both returned
+        track arrays.
         """
 
-        # Get number of events and first jets
+        if not np.isfinite(n_llps_mean) or n_llps_mean < 0:
+            raise ValueError("n_llps_mean must be finite and non-negative")
+        if not np.isfinite(n_llps_std) or n_llps_std < 0:
+            raise ValueError("n_llps_std must be finite and non-negative")
+        if not np.isfinite(d0_smearing_sigma) or d0_smearing_sigma < 0:
+            raise ValueError("d0_smearing_sigma must be finite and non-negative")
+        if not np.isfinite(z0_smearing_sigma) or z0_smearing_sigma < 0:
+            raise ValueError("z0_smearing_sigma must be finite and non-negative")
+        if "trk_eta" not in self.trk_columns:
+            raise ValueError("trk_eta must be configured to apply the |eta| <= 2.5 cut")
+
+        track_eta_idx = self.trk_columns.index("trk_eta")
+
+        # Sample a non-negative integer multiplicity independently per event.
         N_events = len(self.trk_array)
-        jets = self.jets_array[:, 0] # highest pT jet
+        llp_counts = np.maximum(
+            np.rint(np.random.normal(n_llps_mean, n_llps_std, N_events)),
+            0,
+        ).astype(int)
+        llp_event_indices = np.repeat(np.arange(N_events), llp_counts)
+        N_llps = len(llp_event_indices)
+        jets = self.jets_array[llp_event_indices, 0] # highest pT jet
         
         # Get jet kinematics
         pt_jet  = jets[:, 0]
@@ -151,14 +239,14 @@ class LLPMaker:
         e_phi = np.stack([
             -sin_phi,
             cos_phi,
-            np.zeros(N_events)
+            np.zeros(N_llps)
         ], axis=1)
 
         # Sample LLP kinematics
-        z = np.random.beta(alpha, beta, N_events)
+        z = np.random.beta(alpha, beta, N_llps)
         sigma = sig_0 * (1 - z)**a
         opening = np.random.rayleigh(sigma)
-        dphi = np.random.uniform(0, 2*np.pi, N_events)
+        dphi = np.random.uniform(0, 2*np.pi, N_llps)
 
         # Compute direction of the resonance
         n_res = (
@@ -191,7 +279,7 @@ class LLPMaker:
         # Use lifetime to get track origins
         proper_time = np.random.exponential(
             lifetime,
-            N_events
+            N_llps
         )
         if min_lifetime is not None:
             proper_time[proper_time < min_lifetime] = min_lifetime
@@ -203,16 +291,16 @@ class LLPMaker:
         vertex = distance[:,None] * p / pmag[:,None]
 
         # Sample two-body decay
-        costheta = np.random.uniform(-1,1,N_events)
+        costheta = np.random.uniform(-1,1,N_llps)
         sintheta = np.sqrt(1-costheta**2)
-        phi_decay = np.random.uniform(0,2*np.pi,N_events)
+        phi_decay = np.random.uniform(0,2*np.pi,N_llps)
 
         if different_fermion_flavors:
             raise ValueError("Different fermion flavors not implemented yet")
         else:
             # Get fermion mass (e or mu)
             mass_fermion = np.where(
-                np.random.rand(N_events) < 0.5,
+                np.random.rand(N_llps) < 0.5,
                 0.000511,   # GeV
                 0.105658    # GeV
             )
@@ -263,12 +351,12 @@ class LLPMaker:
             )
 
             charge_fermion1 = np.where(
-                np.random.rand(N_events) < 0.5,
+                np.random.rand(N_llps) < 0.5,
                 -1,
                 1    
             )
             charge_fermion2 = -charge_fermion1 if opposite_charge_fermions else np.where(
-                np.random.rand(N_events) < 0.5,
+                np.random.rand(N_llps) < 0.5,
                 -1,
                 1    
             )
@@ -286,45 +374,85 @@ class LLPMaker:
         track_pt_idx = self.trk_columns.index("trk_pt") if "trk_pt" in self.trk_columns else None
         track_px_idx = self.trk_columns.index("trk_px") if "trk_px" in self.trk_columns else None
         track_py_idx = self.trk_columns.index("trk_py") if "trk_py" in self.trk_columns else None
-        track_eta_idx = self.trk_columns.index("trk_eta") if "trk_eta" in self.trk_columns else None
         track_phi_idx = self.trk_columns.index("trk_phi") if "trk_phi" in self.trk_columns else None
         track_d0_idx = self.trk_columns.index("trk_d0") if "trk_d0" in self.trk_columns else None
         track_z0_idx = self.trk_columns.index("trk_z0") if "trk_z0" in self.trk_columns else None
         track_charge_idx = self.trk_columns.index("trk_charge") if "trk_charge" in self.trk_columns else None
+        track_x_pca_idx = self.trk_columns.index("trk_x_pca") if "trk_x_pca" in self.trk_columns else None
+        track_y_pca_idx = self.trk_columns.index("trk_y_pca") if "trk_y_pca" in self.trk_columns else None
 
-        pt1 = np.sqrt(p1[:, 0]**2 + p1[:, 1]**2)
-        pt2 = np.sqrt(p2[:, 0]**2 + p2[:, 1]**2)
-        phi1 = np.arctan2(p1[:, 1], p1[:, 0])
-        phi2 = np.arctan2(p2[:, 1], p2[:, 0])
+        # Compute the impact parameters of the two tracks and smear them independently
+        d0_1, z0_1, phi1, pt1 = _track_impact_parameters(vertex, p1)
+        d0_2, z0_2, phi2, pt2 = _track_impact_parameters(vertex, p2)
+        # Using physical fit sqrt(a^2 + (b/pT)^2) for d0 and z0 resolution, extracted from plots in https://arxiv.org/pdf/1405.6569
+        A_D0, B_D0 =  15.7, 71.3
+        A_Z0, B_Z0 =  37.0, 78.9
+        sigma_d0_1 = impact_parameter_resolution(pt1, A_D0, B_D0) * 1e-3
+        sigma_d0_2 = impact_parameter_resolution(pt2, A_D0, B_D0) * 1e-3
+        sigma_z0_1 = impact_parameter_resolution(pt1, A_Z0, B_Z0) * 1e-3
+        sigma_z0_2 = impact_parameter_resolution(pt2, A_Z0, B_Z0) * 1e-3
+        d0_1 += truncated_gaussian_smearing(self.rng, sigma_d0_1)
+        d0_2 += truncated_gaussian_smearing(self.rng, sigma_d0_2)
+        z0_1 += truncated_gaussian_smearing(self.rng, sigma_z0_1)
+        z0_2 += truncated_gaussian_smearing(self.rng, sigma_z0_2)
         eta1 = np.arcsinh(p1[:, 2] / np.maximum(pt1, 1e-12))
         eta2 = np.arcsinh(p2[:, 2] / np.maximum(pt2, 1e-12))
-        d0 = np.sqrt(vertex[:, 0]**2 + vertex[:, 1]**2)
-        z0 = vertex[:, 2]
-
-        injected_tracks = np.zeros((N_events, 2, n_features), dtype=trk_array.dtype)
+        max_llps = int(np.max(llp_counts, initial=0))
+        injected_tracks = np.zeros(
+            (N_events, 2 * max_llps, n_features),
+            dtype=trk_array.dtype,
+        )
+        llp_positions = (
+            np.arange(N_llps)
+            - np.repeat(np.cumsum(llp_counts) - llp_counts, llp_counts)
+        )
+        track1_positions = 2 * llp_positions
+        track2_positions = track1_positions + 1
 
         if track_px_idx is not None:
-            injected_tracks[:, 0, track_px_idx] = p1[:, 0]
-            injected_tracks[:, 1, track_px_idx] = p2[:, 0]
+            injected_tracks[llp_event_indices, track1_positions, track_px_idx] = p1[:, 0]
+            injected_tracks[llp_event_indices, track2_positions, track_px_idx] = p2[:, 0]
         if track_py_idx is not None:
-            injected_tracks[:, 0, track_py_idx] = p1[:, 1]
-            injected_tracks[:, 1, track_py_idx] = p2[:, 1]
+            injected_tracks[llp_event_indices, track1_positions, track_py_idx] = p1[:, 1]
+            injected_tracks[llp_event_indices, track2_positions, track_py_idx] = p2[:, 1]
         if track_eta_idx is not None:
-            injected_tracks[:, 0, track_eta_idx] = eta1
-            injected_tracks[:, 1, track_eta_idx] = eta2
+            injected_tracks[llp_event_indices, track1_positions, track_eta_idx] = eta1
+            injected_tracks[llp_event_indices, track2_positions, track_eta_idx] = eta2
         if track_phi_idx is not None:
-            injected_tracks[:, 0, track_phi_idx] = phi1
-            injected_tracks[:, 1, track_phi_idx] = phi2
+            injected_tracks[llp_event_indices, track1_positions, track_phi_idx] = phi1
+            injected_tracks[llp_event_indices, track2_positions, track_phi_idx] = phi2
         if track_pt_idx is not None:
-            injected_tracks[:, 0, track_pt_idx] = pt1
-            injected_tracks[:, 1, track_pt_idx] = pt2
+            injected_tracks[llp_event_indices, track1_positions, track_pt_idx] = pt1
+            injected_tracks[llp_event_indices, track2_positions, track_pt_idx] = pt2
         if track_d0_idx is not None:
-            injected_tracks[:, :, track_d0_idx] = d0[:, None]
+            injected_tracks[llp_event_indices, track1_positions, track_d0_idx] = d0_1
+            injected_tracks[llp_event_indices, track2_positions, track_d0_idx] = d0_2
         if track_z0_idx is not None:
-            injected_tracks[:, :, track_z0_idx] = z0[:, None]
+            injected_tracks[llp_event_indices, track1_positions, track_z0_idx] = z0_1
+            injected_tracks[llp_event_indices, track2_positions, track_z0_idx] = z0_2
+        if track_x_pca_idx is not None:
+            injected_tracks[llp_event_indices, track1_positions, track_x_pca_idx] = -d0_1 * np.sin(phi1)
+            injected_tracks[llp_event_indices, track2_positions, track_x_pca_idx] = -d0_2 * np.sin(phi2)
+        if track_y_pca_idx is not None:
+            injected_tracks[llp_event_indices, track1_positions, track_y_pca_idx] = d0_1 * np.cos(phi1)
+            injected_tracks[llp_event_indices, track2_positions, track_y_pca_idx] = d0_2 * np.cos(phi2)
         if track_charge_idx is not None:
-            injected_tracks[:, 0, track_charge_idx] = charge_fermion1
-            injected_tracks[:, 1, track_charge_idx] = charge_fermion2
+            injected_tracks[llp_event_indices, track1_positions, track_charge_idx] = charge_fermion1
+            injected_tracks[llp_event_indices, track2_positions, track_charge_idx] = charge_fermion2
+
+        data_track_valid = np.any(trk_array != 0, axis=-1)
+        data_outside_fiducial = data_track_valid & (
+            ~np.isfinite(trk_array[:, :, track_eta_idx])
+            | (np.abs(trk_array[:, :, track_eta_idx]) > 2.5)
+        )
+        trk_array[data_outside_fiducial] = 0
+
+        injected_track_valid = np.any(injected_tracks != 0, axis=-1)
+        injected_outside_fiducial = injected_track_valid & (
+            ~np.isfinite(injected_tracks[:, :, track_eta_idx])
+            | (np.abs(injected_tracks[:, :, track_eta_idx]) > 2.5)
+        )
+        injected_tracks[injected_outside_fiducial] = 0
         
         candidate_tracks = np.concatenate([trk_array, injected_tracks], axis=1)
 
