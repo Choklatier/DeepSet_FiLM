@@ -48,7 +48,7 @@ Architecture:
   MAX_TRACK_PAIRS: 16
   PHI_DIM: 256
   ATTENTION_HIDDEN_DIM: 16
-  RHO_DIM: 32
+  RHO_DIM: 16
   LATENT_DIM: 16
   N_HIDDEN_LAYERS: 2
 
@@ -65,9 +65,9 @@ Training:
   BETA_KL_WEIGHT : 1 #0.1
 
   # For VICReg
-  LAMBDA_INV : 10.0 # Invariance loss coeff
-  LAMBDA_VAR : 1.0 # Variance loss coeff
-  LAMBDA_COV : 1.0 # Covariance loss coeff
+  LAMBDA_INV : 0.0 #10.0 # Invariance loss coeff
+  LAMBDA_VAR : 0.0 #1.0 # Variance loss coeff
+  LAMBDA_COV : 0.0 #1.0 # Covariance loss coeff
   GAMMA : 1.0 # Variance enforced by Variance term
 
 

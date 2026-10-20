@@ -346,6 +346,7 @@ plt.errorbar(
     total_losses,
     yerr=total_losses_std,
     label = "Total loss",
+    fmt= "o",
     )
 plt.errorbar(
     np.arange(0,len(total_losses_std),1),

@@ -144,7 +144,7 @@ train_event_array = np.concatenate(
 # Inject LLP tracks independently for each valid jet-matched example.
 llp_maker = LLPMaker(val_trk_raw, val_jets_array, trk_columns)
 llp_trk_raw, llp_injected_tracks = llp_maker.sample_LLP_tracks(
-    mass=0.75,  # GeV
+    mass=0.315,  # GeV
     lifetime= 10/LIGHT_SPEED, # mm # 1e-9,  # seconds
     alpha=2.0,
     beta=5.0,
